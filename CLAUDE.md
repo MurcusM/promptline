@@ -40,8 +40,12 @@ the prompt. It is a downstream of [Terminator](https://github.com/gnome-terminat
    permissive by default, never let a review failure allow, and add new modes as
    new policies.
 6. **Keep providers swappable.** Callers use `providers.make_provider(purpose, settings)`.
-   OpenAI is the first provider, and OpenAI-compatible local servers work through
-   `promptline_base_url`.
+   A provider is a preset in `providers.PRESETS` (name, API kind, default URL and key
+   variable); kinds are `openai` (Chat Completions and Responses), `anthropic` (Messages)
+   and `opencode` (picks the format per model). Prediction and `@agent` may use different
+   providers (`promptline_<purpose>_provider`). Add a provider as a preset, or a new
+   file in `providers/` when the wire format differs. Providers take and return Chat
+   Completions-shaped messages; translate inside the provider.
 
 ## Privacy rules
 
@@ -118,7 +122,7 @@ All Promptline code is in `promptlinelib/promptline/`:
 | `session.py` | GTK-free state machine: reads the typed line off the screen, logs commands (cwd, exit status, output) |
 | `suggest/` | `history.py` (shell histories + own log, frecency), `paths.py` (unambiguous path completion), `llm.py` (context, redaction, `Predictor`) |
 | `ghost.py` | Transparent `Gtk.Overlay` layer drawing the suggestion on VTE's cell grid; never writes to the pty |
-| `providers/` | `make_provider`, key resolution; `openai.py` (Chat Completions; tool calls via the Responses API) |
+| `providers/` | `PRESETS`, `make_provider`, key resolution; `openai.py` (Chat Completions; Responses for OpenAI tool calls and Zen's GPT models), `anthropic.py` (Messages API) |
 | `agent/` | `@agent`: request handoff (`__init__`), `loop.py`, `tools.py` (`run_command`, `place_on_prompt`, `remember`, `forget`), `prompts.py` (mode text, personalisation, memory, guardrails), `cli.py` (the `promptline-agent` program: policy choice, audit log, streaming UI) |
 | `personal.py` | The user's files: personalisation, guardrails (`guardrails_ready`), memory (`Memory`), editing (`promptline -P/--guardrails/--memory`, hooked in `optionparse.py`) |
 | `agent/approval.py` | Permission modes: `AskEveryTime`, `AutoReview` + `ModelReviewer`, `FullPermission`; `HARD_STOPS` |
@@ -177,6 +181,12 @@ The controller types that at the next prompt. This needs no D-Bus, so it works w
   picks GDK 4.
 - Model prediction must ignore input starting with `@`, and the agent test disables
   prediction (it shares the fake server).
+- Provider settings: `promptline_base_url` and `promptline_api_key_env` default to empty,
+  meaning the preset's own. A purpose with its own provider takes all four connection
+  settings from its own keys and never mixes in the default's. Changing provider in
+  Preferences clears the key file, so one provider's key is never sent to another.
+- OpenCode Zen: model name decides the API (`opencode_api`); Gemini models need Google's
+  format and give an `Unsupported` provider whose error explains why.
 - OpenAI: tools combined with `reasoning_effort` are rejected on Chat Completions for
   reasoning models, so they go through the Responses API with encrypted reasoning
   carried in `_reasoning`. Reasoning tokens count against the output limit
