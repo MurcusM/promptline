@@ -1,3 +1,20 @@
+promptline (0.2.1) unstable; urgency=medium
+
+  * More providers. Choose one in Preferences > Promptline: OpenAI,
+    Anthropic, OpenCode Zen, OpenRouter, Google Gemini, DeepSeek, Qwen,
+    Meta Muse, Ollama, LM Studio, or any OpenAI-compatible server. You
+    need an API key for hosted ones; subscriptions are not used.
+  * Command prediction and @agent can use different providers, for example
+    a local model to predict commands and a hosted one for @agent.
+  * OpenCode Zen: one key reaches many models. Promptline picks the API
+    format from the model name (a messages:, responses: or chat: prefix
+    overrides it).
+  * Choosing a provider clears the previous one's key file and address, so
+    a key is never sent to the wrong provider.
+  * Existing OpenAI settings keep working.
+
+ -- Murcus Makhubele <murcus39@gmail.com>  Thu, 08 Oct 2026 22:31:58 +0200
+
 promptline (0.2.0) unstable; urgency=medium
 
   * Personalisation: promptline -P opens a file about your role, work,
