@@ -24,8 +24,8 @@
    broadcast typing, profiles and plugins.
   </_p>
  </description>
- <url type="homepage">https://github.com/M-TEK39/promptline</url>
- <url type="bugtracker">https://github.com/M-TEK39/promptline/issues</url>
+ <url type="homepage">https://github.com/MurcusM/promptline</url>
+ <url type="bugtracker">https://github.com/MurcusM/promptline/issues</url>
  <developer id="io.github.m_tek39">
   <name>Promptline contributors, building on the Terminator Team's work</name>
  </developer>

@@ -33,7 +33,8 @@ from .approval import ALLOW, AskEveryTime, AutoReview, FullPermission, \
 from .loop import Agent
 from .prompts import system_prompt, user_message
 from .tools import run_command
-from ..providers import ProviderError, make_provider
+from ..providers import (ProviderError, make_provider, missing_key_hint,
+                         provider_settings)
 
 CONVERSATION_TTL = 30 * 60
 MAX_MESSAGES = 60
@@ -373,10 +374,8 @@ def main(argv=None):
 
     provider = make_provider('agent', request.get('settings'))
     if provider is None:
-        ui.error('no API key found. Set OPENAI_API_KEY for Promptline, or '
-                 'point promptline_api_key_file in ~/.config/promptline/'
-                 'config at a file containing the key (Preferences > '
-                 'Promptline).')
+        ui.error(missing_key_hint(request.get('settings') or
+                                  provider_settings('agent')))
         return 1
 
     cwd = request.get('cwd') or os.getcwd()
