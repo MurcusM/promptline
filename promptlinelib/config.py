@@ -611,7 +611,9 @@ class ConfigBase(Borg):
 
             keytype = '%s(default=%s)' % (keytype, value)
 
-            if key == 'custom_url_handler':
+            # An empty default must be quoted, or the key is "invalid" when
+            # the config file leaves it out
+            if key == 'custom_url_handler' or value == '':
                 keytype = 'string(default="")'
 
             section[key] = keytype

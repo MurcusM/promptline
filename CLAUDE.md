@@ -182,9 +182,11 @@ The controller types that at the next prompt. This needs no D-Bus, so it works w
 - Model prediction must ignore input starting with `@`, and the agent test disables
   prediction (it shares the fake server).
 - Provider settings: `promptline_base_url` and `promptline_api_key_env` default to empty,
-  meaning the preset's own. A purpose with its own provider takes all four connection
-  settings from its own keys and never mixes in the default's. Changing provider in
-  Preferences clears the key file, so one provider's key is never sent to another.
+  meaning the preset's own. A purpose naming a *different* provider takes all four
+  connection settings from its own keys and never mixes in the default's; one naming the
+  same provider (or none) shares the default's connection, its own settings winning. (It
+  once didn't, so the default's key file was ignored.) Changing provider in Preferences
+  clears the key file, so one provider's key is never sent to another.
 - OpenCode Zen: model name decides the API (`opencode_api`); Gemini models need Google's
   format and give an `Unsupported` provider whose error explains why.
 - OpenAI: tools combined with `reasoning_effort` are rejected on Chat Completions for
