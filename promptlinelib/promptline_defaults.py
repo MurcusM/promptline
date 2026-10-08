@@ -15,10 +15,23 @@ GLOBAL_DEFAULTS = {
     # so it is opt-in
     'promptline_llm_autocomplete': False,
     'promptline_predict_next': True,
+    # A name from providers.PRESETS. The base URL and key variable are
+    # overrides: empty means the preset's own
     'promptline_provider': 'openai',
-    'promptline_base_url': 'https://api.openai.com/v1',
-    'promptline_api_key_env': 'OPENAI_API_KEY',
+    'promptline_base_url': '',
+    'promptline_api_key_env': '',
     'promptline_api_key_file': '',
+    # Prediction and @agent can use a different provider from the one above.
+    # An empty provider means "use the one above"; if set, these four
+    # replace it as a group
+    'promptline_autocomplete_provider': '',
+    'promptline_autocomplete_base_url': '',
+    'promptline_autocomplete_api_key_env': '',
+    'promptline_autocomplete_api_key_file': '',
+    'promptline_agent_provider': '',
+    'promptline_agent_base_url': '',
+    'promptline_agent_api_key_env': '',
+    'promptline_agent_api_key_file': '',
     'promptline_autocomplete_model': 'gpt-6-luna',
     'promptline_autocomplete_reasoning': 'xhigh',
     'promptline_agent_model': 'gpt-6-luna',

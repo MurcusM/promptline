@@ -225,6 +225,12 @@ Each phase ends with passing `xvfb-run -a pytest` and a manual run of
   registered after the first terminal existed, which VTE refuses, so the
   real app got no shell marks. `terminal.py` now registers them at import,
   and a fresh-process test guards it.
+- **Multi-provider (2026-10-08).** `providers.PRESETS` names OpenAI,
+  Anthropic (Messages API, `providers/anthropic.py`), OpenCode Zen (format
+  chosen per model; Gemini models unsupported), OpenRouter, Gemini's
+  compatibility endpoint, Ollama, LM Studio and a custom OpenAI-compatible
+  server. Prediction and `@agent` can use different providers. API keys only,
+  no subscription sign-in. Not yet verified against live providers.
 - **0.2 features (2026-09-28).** Personalisation (`promptline -P`, a template
   for security and network work) and agent memory (`remember`/`forget` tools,
   learning from edited commands) feed both prediction and `@agent`. There are

@@ -18,7 +18,11 @@ def config():
     config.inhibit_save()   # never write the developer's real config
     saved = dict((key, config[key]) for key in
                  ('promptline_enabled', 'promptline_api_key_env',
-                  'promptline_api_key_file', 'promptline_agent_reasoning'))
+                  'promptline_api_key_file', 'promptline_agent_reasoning',
+                  'promptline_provider', 'promptline_agent_provider',
+                  'promptline_agent_model', 'promptline_autocomplete_provider',
+                  'promptline_autocomplete_model',
+                  'promptline_autocomplete_reasoning'))
     yield config
     for key, value in saved.items():
         config[key] = value
@@ -61,6 +65,35 @@ def test_key_status_never_shows_the_key(config, monkeypatch, tmp_path):
     page.set('api_key_env', 'PL_TEST_KEY')
     assert page.key_status.get_text() == 'An API key was found.'
     assert 'secret' not in page.key_status.get_text()
+
+
+def test_choosing_a_provider_forgets_the_old_ones_key_and_suggests_models(
+        config, monkeypatch):
+    monkeypatch.setenv('ANTHROPIC_API_KEY', 'sk-ant-secret')
+    monkeypatch.setenv('OPENCODE_API_KEY', 'zen-secret')
+    page = prefs.PromptlinePage(config)
+    page.set('api_key_file', '/some/openai-key')
+    page.set('agent_reasoning', 'xhigh')
+    page.widgets['promptline_provider'].set_active_id('anthropic')
+    assert config['promptline_provider'] == 'anthropic'
+    assert config['promptline_api_key_file'] == ''
+    assert config['promptline_agent_model'] == 'claude-sonnet-5-5'
+    assert config['promptline_autocomplete_model'].startswith('claude-haiku')
+    assert config['promptline_agent_reasoning'] == ''
+    assert page.key_status.get_text() == 'An API key was found.'
+
+    # Prediction on its own provider leaves @agent alone
+    page.widgets['promptline_autocomplete_provider'].set_active_id('ollama')
+    assert config['promptline_autocomplete_provider'] == 'ollama'
+    assert config['promptline_agent_model'] == 'claude-sonnet-5-5'
+    assert config['promptline_provider'] == 'anthropic'
+    assert page.key_status.get_text() == \
+        '@agent: An API key was found.\nPrediction: An API key was found.'
+
+    page.widgets['promptline_agent_provider'].set_active_id('opencode')
+    assert config['promptline_agent_model'] == 'claude-sonnet-5-5'
+    page.widgets['promptline_autocomplete_provider'].set_active_id('')
+    assert config['promptline_autocomplete_provider'] == ''
 
 
 def test_page_is_added_to_notebook(config):

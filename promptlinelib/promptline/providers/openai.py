@@ -6,8 +6,8 @@ Uses only the standard library. The same wire format is served by Ollama,
 LM Studio, vLLM and others, so pointing promptline_base_url at one of those
 works without a key.
 
-Callers use Chat Completions-shaped messages. Requests with tools go to
-OpenAI's Responses API instead, since OpenAI's reasoning models only accept
+Callers use Chat Completions-shaped messages. Requests with tools to OpenAI
+go to its Responses API instead, since OpenAI's reasoning models only accept
 tools there; the messages are translated both ways, and the model's
 (encrypted) reasoning is carried along in a '_reasoning' key on assistant
 messages so it survives between tool calls.
@@ -63,7 +63,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from . import ProviderError
+from . import ProviderError, needs_key
 
 # Reasoning tokens count against max_completion_tokens, so each effort level
 # needs room to think on top of the visible reply, and time to do it in
@@ -77,22 +77,26 @@ REASONING_BUDGET = {
 
 
 class OpenAIProvider(object):
-    """Talks to {base_url}/chat/completions"""
-    def __init__(self, base_url, api_key, model, reasoning_effort=''):
+    """Talks to {base_url}/chat/completions, or {base_url}/responses.
+
+    api is 'chat' or 'responses' for a server that only serves one of them
+    (OpenCode Zen serves GPT models on Responses only). Left as None, chat
+    is used, except that OpenAI itself gets tool requests on Responses."""
+    needs_key = staticmethod(needs_key)
+
+    def __init__(self, base_url, api_key, model, reasoning_effort='',
+                 api=None):
         self.base_url = base_url.rstrip('/')
         self.api_key = api_key
         self.model = model
         self.reasoning_effort = reasoning_effort
+        self.api = api
 
-    @staticmethod
-    def needs_key(base_url):
-        host = urllib.parse.urlparse(base_url).hostname or ''
-        return host not in ('localhost', '127.0.0.1', '::1')
-
-    def uses_responses_api(self):
-        """Only OpenAI itself serves the Responses API"""
-        return urllib.parse.urlparse(self.base_url).hostname == \
-            'api.openai.com'
+    def uses_responses_api(self, tools):
+        if self.api:
+            return self.api == 'responses'
+        return bool(tools) and \
+            urllib.parse.urlparse(self.base_url).hostname == 'api.openai.com'
 
     def budget(self, max_tokens, timeout):
         """(token limit, timeout) allowing for the reasoning effort"""
@@ -115,7 +119,7 @@ class OpenAIProvider(object):
         With on_text, the reply is streamed and on_text(piece) is called as
         text arrives (servers that don't stream simply reply at once)."""
         max_tokens, timeout = self.budget(max_tokens, timeout)
-        if tools and self.uses_responses_api():
+        if self.uses_responses_api(tools):
             return self._responses(messages, tools, max_tokens, timeout,
                                    on_text)
         body = {'model': self.model,
@@ -142,13 +146,14 @@ class OpenAIProvider(object):
     def _responses(self, messages, tools, max_tokens, timeout, on_text=None):
         body = {'model': self.model,
                 'input': to_responses_input(messages),
-                'tools': [dict(tool['function'], type='function')
-                          for tool in tools],
                 'max_output_tokens': max_tokens,
                 # Nothing is kept on OpenAI's side; the reasoning comes back
                 # encrypted so it can be passed along with the next request
                 'store': False,
                 'include': ['reasoning.encrypted_content']}
+        if tools:
+            body['tools'] = [dict(tool['function'], type='function')
+                             for tool in tools]
         if self.reasoning_effort:
             body['reasoning'] = {'effort': self.reasoning_effort}
         if on_text:
@@ -176,13 +181,13 @@ class OpenAIProvider(object):
                     return collect_chat_stream(events, on_text)
                 return json.loads(response.read().decode('utf-8'))
         except urllib.error.HTTPError as ex:
-            raise ProviderError('%s: %s' % (ex.code, _error_message(ex)),
+            raise ProviderError('%s: %s' % (ex.code, error_message(ex)),
                                 auth=ex.code in (401, 403, 404))
         except (urllib.error.URLError, OSError, ValueError) as ex:
             raise ProviderError(str(getattr(ex, 'reason', ex)))
 
 
-def _error_message(http_error):
+def error_message(http_error):
     """The API's own explanation, if it sent one"""
     try:
         detail = json.loads(http_error.read().decode('utf-8'))
