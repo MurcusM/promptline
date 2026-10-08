@@ -22,7 +22,9 @@ def config():
                   'promptline_provider', 'promptline_agent_provider',
                   'promptline_agent_model', 'promptline_autocomplete_provider',
                   'promptline_autocomplete_model',
-                  'promptline_autocomplete_reasoning'))
+                  'promptline_autocomplete_reasoning',
+                  'promptline_agent_api_key_file',
+                  'promptline_autocomplete_api_key_file'))
     yield config
     for key, value in saved.items():
         config[key] = value
@@ -87,13 +89,33 @@ def test_choosing_a_provider_forgets_the_old_ones_key_and_suggests_models(
     assert config['promptline_autocomplete_provider'] == 'ollama'
     assert config['promptline_agent_model'] == 'claude-sonnet-5-5'
     assert config['promptline_provider'] == 'anthropic'
-    assert page.key_status.get_text() == \
-        '@agent: An API key was found.\nPrediction: An API key was found.'
+    assert page.key_status.get_text() == 'An API key was found.'
+
+    # A purpose without a key is told apart, and the reason is given
+    monkeypatch.delenv('DEEPSEEK_API_KEY', raising=False)
+    page.widgets['promptline_autocomplete_provider'].set_active_id('deepseek')
+    assert page.key_status.get_text() == (
+        '@agent: An API key was found.\nPrediction: No API key found: '
+        'DEEPSEEK_API_KEY is not set in the environment Promptline was '
+        'started with.')
 
     page.widgets['promptline_agent_provider'].set_active_id('opencode')
     assert config['promptline_agent_model'] == 'claude-sonnet-5-5'
     page.widgets['promptline_autocomplete_provider'].set_active_id('')
     assert config['promptline_autocomplete_provider'] == ''
+
+
+def test_a_purposes_key_file_only_shows_for_a_different_provider(config):
+    config['promptline_provider'] = 'opencode'
+    config['promptline_agent_provider'] = 'opencode'
+    page = prefs.PromptlinePage(config)
+    assert not page.key_rows['agent'][1].get_visible()
+    page.widgets['promptline_agent_provider'].set_active_id('deepseek')
+    assert page.key_rows['agent'][1].get_visible()
+    page.widgets['agent_api_key_file'].set_text('/home/x/deepseek-key')
+    assert config['promptline_agent_api_key_file'] == '/home/x/deepseek-key'
+    page.widgets['promptline_agent_provider'].set_active_id('')
+    assert not page.key_rows['agent'][1].get_visible()
 
 
 def test_page_is_added_to_notebook(config):
@@ -146,3 +168,14 @@ def test_full_permission_needs_guardrails(config, monkeypatch, tmp_path):
         assert page.mode_note.get_text().startswith('DANGEROUS')
     finally:
         config['promptline_agent_mode'] = saved
+
+
+def test_a_config_that_leaves_out_empty_settings_is_valid(tmp_path):
+    """Keys whose default is empty used to be reported as invalid when the
+    file didn't mention them"""
+    from configobj import ConfigObj
+    from validate import Validator
+    from promptlinelib.config import Config
+    parser = ConfigObj(['[global_config]', '  promptline_llm_autocomplete = True'],
+                       configspec=Config().base.defaults_to_configspec())
+    assert parser.validate(Validator(), preserve_errors=True) is True
