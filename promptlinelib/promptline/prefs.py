@@ -12,7 +12,8 @@ from gi.repository import Gtk
 
 from ..translation import _
 from . import personal
-from .providers import resolve_api_key
+from .providers import (PRESETS, connection, needs_key, provider_settings,
+                        resolve_api_key)
 
 REASONING = ['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh']
 
@@ -43,6 +44,7 @@ class PromptlinePage(object):
         self.row = 0
         self.key_status = None
         self.reverting_mode = False
+        self.widgets = {}
 
         self.heading(_('Promptline'))
         self.note(_('With these off, Promptline behaves exactly like '
@@ -62,6 +64,7 @@ class PromptlinePage(object):
                     'sent.'))
         self.check('predict_next',
                    _('Predict the next command on an empty prompt'))
+        self.provider_chooser('autocomplete')
         self.entry('autocomplete_model', _('Model'))
         self.reasoning('autocomplete_reasoning', _('Reasoning effort'))
 
@@ -75,17 +78,26 @@ class PromptlinePage(object):
 
         self.heading(_('@agent'))
         self.note(_('Type "@agent" and a question or task at the prompt.'))
+        self.provider_chooser('agent')
         self.entry('agent_model', _('Model'))
         self.reasoning('agent_reasoning', _('Reasoning effort'))
         self.mode_chooser()
 
-        self.heading(_('Provider'))
+        self.heading(_('Default provider'))
+        self.note(_('Used by prediction and @agent unless they choose '
+                    'their own above. Picking a provider clears the fields '
+                    'below and suggests models for it. The fields only '
+                    'override the provider\'s own address and key '
+                    'variable, e.g. for another OpenAI-compatible server '
+                    '(choose "Other"). Local servers need no key. '
+                    'Reasoning effort is sent to OpenAI-compatible servers '
+                    'and ignored by Anthropic models; leave it empty for '
+                    'servers that reject it.'))
+        self.provider_chooser()
         self.entry('base_url', _('API base URL'))
-        self.note(_('OpenAI, or any OpenAI-compatible server such as '
-                    'Ollama (http://localhost:11434/v1), which needs no '
-                    'key.'))
         self.entry('api_key_env', _('Key environment variable'))
         self.key_file()
+        self.refresh_placeholders()
         self.key_status = Gtk.Label(xalign=0)
         self.attach(self.key_status)
         self.update_key_status()
@@ -124,6 +136,7 @@ class PromptlinePage(object):
     def entry(self, key, text):
         entry = Gtk.Entry(text=self.config['promptline_' + key])
         entry.connect('changed', lambda e: self.set(key, e.get_text().strip()))
+        self.widgets[key] = entry
         self.attach(entry, text)
 
     def reasoning(self, key, text):
@@ -132,8 +145,25 @@ class PromptlinePage(object):
             combo.append_text(effort)
         combo.get_child().set_text(self.config['promptline_' + key])
         combo.connect('changed', lambda c: self.set(
-            key, c.get_active_text().strip()))
+            key, (c.get_active_text() or '').strip()))
+        self.widgets[key] = combo.get_child()
         self.attach(combo, text)
+
+    def provider_chooser(self, purpose=None):
+        """Choose the default provider, or the one for a purpose"""
+        combo = Gtk.ComboBoxText()
+        if purpose:
+            combo.append('', _('Same as the default provider'))
+        for preset in PRESETS.values():
+            combo.append(preset.name, preset.label)
+        combo.set_active_id(self.config[self.provider_key(purpose)])
+        combo.connect('changed', self.on_provider_changed, purpose)
+        self.attach(combo, _('Provider'))
+        self.widgets[self.provider_key(purpose)] = combo
+
+    @staticmethod
+    def provider_key(purpose):
+        return 'promptline_%sprovider' % (purpose + '_' if purpose else '')
 
     def mode_chooser(self):
         combo = Gtk.ComboBoxText()
@@ -184,7 +214,8 @@ class PromptlinePage(object):
         entry = Gtk.Entry(text=self.config['promptline_api_key_file'],
                           hexpand=True,
                           placeholder_text=_('optional, e.g. '
-                                             '~/.config/promptline/openai-key'))
+                                             '~/.config/promptline/api-key'))
+        self.key_file_entry = entry
         entry.connect('changed',
                       lambda e: self.set('api_key_file', e.get_text().strip()))
         choose = Gtk.Button(label=_('Choose...'))
@@ -201,14 +232,64 @@ class PromptlinePage(object):
         if key.startswith('api_key') and self.key_status is not None:
             self.update_key_status()
 
+    def on_provider_changed(self, combo, purpose):
+        """A provider was chosen: forget the old one's address and key
+        (which would otherwise be sent to the new one), and suggest models
+        for it"""
+        name = combo.get_active_id()
+        prefix = purpose + '_' if purpose else ''
+        if name is None or name == self.config[self.provider_key(purpose)]:
+            return
+        for field in ('base_url', 'api_key_env', 'api_key_file'):
+            self.set(prefix + field, '')
+            if not purpose and field in self.widgets:
+                self.widgets[field].set_text('')
+        self.set(prefix + 'provider', name)
+        if not purpose:
+            self.key_file_entry.set_text('')
+        preset = PRESETS.get(name)
+        for kind in [purpose] if purpose else ('autocomplete', 'agent'):
+            if preset is None or (
+                    not purpose and self.config['promptline_%s_provider' % kind]):
+                continue
+            self.widgets[kind + '_model'].set_text(
+                getattr(preset, kind + '_model'))
+            if name != 'openai':
+                # Other servers may reject OpenAI's reasoning_effort
+                self.widgets[kind + '_reasoning'].set_text('')
+        self.refresh_placeholders()
+        self.update_key_status()
+
+    def refresh_placeholders(self):
+        """Show the chosen provider's own address and key variable in the
+        fields that override them"""
+        preset = PRESETS.get(self.config['promptline_provider'])
+        self.widgets['base_url'].set_placeholder_text(
+            preset.base_url if preset else '')
+        self.widgets['api_key_env'].set_placeholder_text(
+            preset.key_env if preset else '')
+
     def update_key_status(self):
         """Say whether a key is found, without ever showing it"""
-        if resolve_api_key(self.config):
-            self.key_status.set_text(_('An API key was found.'))
+        found = {}
+        for purpose in ('agent', 'autocomplete'):
+            settings = provider_settings(purpose, self.config)
+            found[purpose] = (bool(resolve_api_key(settings)
+                                   or not needs_key(connection(settings)[1])),
+                              connection(settings)[2] or _('a key'))
+        if found['agent'] == found['autocomplete']:
+            lines = [self.key_message(*found['agent'])]
         else:
-            self.key_status.set_text(_('No API key found: prediction and '
-                                       '@agent need one for hosted '
-                                       'providers.'))
+            lines = [_('@agent: ') + self.key_message(*found['agent']),
+                     _('Prediction: ') +
+                     self.key_message(*found['autocomplete'])]
+        self.key_status.set_text('\n'.join(lines))
+
+    @staticmethod
+    def key_message(found, name):
+        if found:
+            return _('An API key was found.')
+        return _('No API key found: set %s or a key file.') % name
 
     def on_choose_key_file(self, button, entry):
         dialog = Gtk.FileChooserDialog(

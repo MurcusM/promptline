@@ -113,12 +113,12 @@ sudo apt install python3-gi python3-gi-cairo python3-psutil python3-configobj \
 ## Installing
 
 On Debian/Ubuntu, download the `.deb` from the
-[latest release](https://github.com/M-TEK39/promptline/releases/latest) and run
+[latest release](https://github.com/MurcusM/promptline/releases/latest) and run
 `sudo apt install ./promptline_<version>_all.deb`. Or build it yourself:
 
 ```sh
 sudo apt install debhelper dh-python gettext intltool
-git clone https://github.com/M-TEK39/promptline.git
+git clone https://github.com/MurcusM/promptline.git
 cd promptline
 dpkg-buildpackage -us -uc -b
 sudo apt install ../promptline_*_all.deb
@@ -140,7 +140,8 @@ Open **Preferences → Promptline**, or edit `~/.config/promptline/config`:
 ```ini
 [global_config]
   promptline_llm_autocomplete = True
-  promptline_api_key_file = ~/.config/promptline/openai-key
+  promptline_provider = anthropic
+  promptline_api_key_file = ~/.config/promptline/api-key
 ```
 
 | Setting | Default | |
@@ -152,9 +153,11 @@ Open **Preferences → Promptline**, or edit `~/.config/promptline/config`:
 | `promptline_predict_next` | `True` | Predict the next command on an empty prompt |
 | `promptline_autocomplete_model` / `_reasoning` | `gpt-6-luna` / `xhigh` | Model for prediction |
 | `promptline_agent_model` / `_reasoning` | `gpt-6-luna` / `xhigh` | Model for `@agent` |
-| `promptline_base_url` | `https://api.openai.com/v1` | Any OpenAI-compatible server |
-| `promptline_api_key_env` | `OPENAI_API_KEY` | Environment variable holding the key |
+| `promptline_provider` | `openai` | `openai`, `anthropic`, `opencode`, `openrouter`, `gemini`, `deepseek`, `qwen`, `muse`, `ollama`, `lmstudio` or `custom` |
+| `promptline_base_url` | *(empty)* | Overrides the provider's address; needed for `custom` |
+| `promptline_api_key_env` | *(empty)* | Overrides the environment variable holding the key |
 | `promptline_api_key_file` | *(empty)* | File holding the key (use `chmod 600`) |
+| `promptline_autocomplete_provider` / `promptline_agent_provider` | *(empty)* | A different provider for prediction or `@agent`; empty uses `promptline_provider` |
 | `promptline_agent_mode` | `ask` | `ask`, `auto-review` or `full` (full needs guardrails) |
 | `promptline_review_reasoning` | `medium` | Reasoning effort of the auto-review reviewer |
 
@@ -164,9 +167,46 @@ Open **Preferences → Promptline**, or edit `~/.config/promptline/config`:
 | `promptline --guardrails` | `~/.config/promptline/guardrails.md`, your rules for the agent |
 | `promptline --memory` | `~/.local/share/promptline/memory.md`, what the agent remembers |
 
-**Local models.** Point `promptline_base_url` at an OpenAI-compatible server
-such as Ollama (`http://localhost:11434/v1`) or LM Studio. A local server
-needs no key.
+**Providers.** Choose one in Preferences → Promptline, or set
+`promptline_provider`. Each reads its key from its own variable unless you
+override it:
+
+| Provider | Key variable | Notes |
+| --- | --- | --- |
+| `openai` | `OPENAI_API_KEY` | |
+| `anthropic` | `ANTHROPIC_API_KEY` | Messages API. The reasoning setting is ignored |
+| `opencode` | `OPENCODE_API_KEY` | [OpenCode Zen](https://opencode.ai/docs/zen/), one key for many models; see below |
+| `openrouter` | `OPENROUTER_API_KEY` | |
+| `gemini` | `GEMINI_API_KEY` | Google's OpenAI-compatible endpoint |
+| `deepseek` | `DEEPSEEK_API_KEY` | |
+| `qwen` | `DASHSCOPE_API_KEY` | Alibaba Cloud Model Studio, international endpoint. For another region or workspace, set `promptline_base_url` |
+| `muse` | `MODEL_API_KEY` | Meta's Model API (`https://api.meta.ai/v1`) |
+| `ollama`, `lmstudio` | none | Local servers need no key |
+| `custom` | your choice | Any OpenAI-compatible server: set `promptline_base_url` |
+
+Keys are API keys. Promptline does not sign in to a subscription.
+Prediction and `@agent` can use different providers, for example a local
+Ollama model to predict commands and a larger hosted model for `@agent`:
+
+```ini
+[global_config]
+  promptline_provider = opencode
+  promptline_agent_model = claude-sonnet-5-5
+  promptline_autocomplete_provider = ollama
+  promptline_autocomplete_model = qwen2.5-coder:7b
+  promptline_autocomplete_reasoning =
+```
+
+Reasoning effort is sent to OpenAI-compatible servers, and some reject it,
+so leave `_reasoning` empty for those.
+
+**OpenCode Zen.** Zen serves its models in different API formats, and
+Promptline picks one from the model name: `claude-*` use the Messages API,
+`gpt-*`, `grok-*` and `muse-*` use Responses, and everything else (Kimi, GLM,
+DeepSeek, MiniMax, Qwen, Mistral...) uses Chat Completions. Gemini models use
+Google's own format, which Promptline doesn't speak. If the guess is wrong
+for a model, name the format in front: `messages:qwen3.6-plus`. The model
+IDs are listed at <https://opencode.ai/zen/v1/models>.
 
 **zsh-autosuggestions and fish.** Promptline never draws over another
 suggestion, so a shell plugin's history match takes precedence. To let

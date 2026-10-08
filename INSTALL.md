@@ -9,7 +9,7 @@ Debian / Ubuntu: from a release
 -------------------------------
 
 Download `promptline_<version>_all.deb` from the
-[releases page](https://github.com/M-TEK39/promptline/releases), then:
+[releases page](https://github.com/MurcusM/promptline/releases), then:
 
     sudo apt install ./promptline_<version>_all.deb
 
@@ -19,7 +19,7 @@ Debian / Ubuntu: building the package
 -------------------------------------
 
     sudo apt install debhelper dh-python gettext intltool   # build tools, once
-    git clone https://github.com/M-TEK39/promptline.git
+    git clone https://github.com/MurcusM/promptline.git
     cd promptline
     dpkg-buildpackage -us -uc -b
     sudo apt install ../promptline_*_all.deb
@@ -49,7 +49,7 @@ support (0.78 or newer). On an older VTE Promptline runs as plain Terminator.
 From a checkout
 ---------------
 
-    git clone https://github.com/M-TEK39/promptline.git
+    git clone https://github.com/MurcusM/promptline.git
     cd promptline
     python3 promptline
 

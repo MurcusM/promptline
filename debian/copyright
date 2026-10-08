@@ -1,7 +1,7 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: Promptline
-Upstream-Contact: https://github.com/M-TEK39/promptline/issues
-Source: https://github.com/M-TEK39/promptline
+Upstream-Contact: https://github.com/MurcusM/promptline/issues
+Source: https://github.com/MurcusM/promptline
 Comment: Promptline is based on Terminator
  (https://github.com/gnome-terminator/terminator), started by Chris Jones
  in 2007, maintained by Stephen Boddy and Matt Rose, with contributions
