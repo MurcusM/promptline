@@ -1,3 +1,28 @@
+promptline (0.4.0) unstable; urgency=medium
+
+  * Two more reasoning levels, max and ultra (Preferences > Promptline, or
+    @agent --max / --ultra). max asks the model for the most thinking it
+    gives: Claude's max effort, xhigh for OpenAI-style servers. ultra is max
+    plus a team of subagents on a fixed workflow: a planner, explorers
+    investigating in parallel, a worker, then a reviewer and a verifier who
+    can send the work back. It overrides your subagent settings.
+  * Subagents, usable at any reasoning level: helpers with a conversation of
+    their own, working in parallel. Choose off, auto or always in
+    Preferences > Promptline. Read-only ones run without asking, within a
+    strict allowlist; ones that change things follow your permission mode.
+    Add your own in ~/.config/promptline/agents/, and your own workflows in
+    ~/.config/promptline/flows/.
+  * The context window defaults to 1M tokens (Preferences > Promptline). The
+    agent keeps more history, command output and terminal context, and if a
+    model has a smaller window it summarises and tries again.
+  * Steering stays guidance: what you type while the agent works never
+    derails it. Start a message with stop (or !) to interrupt.
+  * Claude models get their thinking carried between tool calls.
+  * Fix: a keypress meant for an approval prompt could be taken by the
+    steering reader.
+
+ -- Murcus Makhubele <murcus39@gmail.com>  Fri, 09 Oct 2026 04:29:40 +0200
+
 promptline (0.3.0) unstable; urgency=medium
 
   * @agent --goal <what you want>: the agent works on its own until the goal
