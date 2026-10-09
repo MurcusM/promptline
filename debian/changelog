@@ -1,3 +1,27 @@
+promptline (0.2.3) unstable; urgency=medium
+
+  * Fix: OpenCode Zen answered every request with 403 Forbidden, because
+    its firewall blocks Python's default User-Agent. Promptline now
+    identifies itself, which also helps with other providers behind the
+    same kind of firewall.
+
+ -- Murcus Makhubele <murcus39@gmail.com>  Fri, 09 Oct 2026 02:14:49 +0200
+
+promptline (0.2.2) unstable; urgency=medium
+
+  * Fix: a provider chosen for @agent or prediction that was the same as
+    the default provider ignored the default's API key file, so the key
+    was never found. They now share it.
+  * A provider that differs from the default gets its own key file field
+    in Preferences > Promptline.
+  * A key file may hold the key as NAME=key, as written for the shell.
+  * When no key is found, Preferences says why: the variable isn't set,
+    or the key file is empty or unreadable.
+  * No more "is invalid" messages in the log for settings left out of the
+    config file.
+
+ -- Murcus Makhubele <murcus39@gmail.com>  Fri, 09 Oct 2026 01:49:37 +0200
+
 promptline (0.2.1) unstable; urgency=medium
 
   * More providers. Choose one in Preferences > Promptline: OpenAI,

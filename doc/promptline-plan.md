@@ -225,6 +225,12 @@ Each phase ends with passing `xvfb-run -a pytest` and a manual run of
   registered after the first terminal existed, which VTE refuses, so the
   real app got no shell marks. `terminal.py` now registers them at import,
   and a fresh-process test guards it.
+- **Goals, steering, reviewer context (2026-10-09).** `@agent --goal` works
+  without a step limit (retries, nudges, stuck detection, summarising when
+  the context grows, approval timeout that skips and never approves).
+  Typing while the agent thinks steers it. The auto-review reviewer now sees
+  the conversation, which fixes `@agent continue` reaching it as just
+  "continue". Step limit and approval wait are settings.
 - **Multi-provider (2026-10-08).** `providers.PRESETS` names OpenAI,
   Anthropic (Messages API, `providers/anthropic.py`), OpenCode Zen (format
   chosen per model; Gemini models unsupported), OpenRouter, Gemini's

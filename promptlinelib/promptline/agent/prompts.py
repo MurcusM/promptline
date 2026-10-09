@@ -53,10 +53,35 @@ MODE_TEXT = {
 }
 
 
-def system_prompt(shell, mode='ask', personal='', memory='', guardrails=None):
+GOAL_TEXT = (
+    "You have been given a GOAL. Work towards it on your own until it is "
+    "reached: keep going without stopping to ask or to report progress, "
+    "because the user may be away from the terminal. Plan, investigate "
+    "with read-only commands, make progress in small steps, and check the "
+    "result of each step before the next. Make reasonable decisions "
+    "yourself and note any assumptions in your final summary. Prefer "
+    "changes that are easy to undo. When you believe the goal is reached, "
+    "verify it (run the tests, check the output) and then call "
+    "goal_complete with a short summary. If a command is declined or "
+    "times out waiting for the user, do something else that gets you "
+    "closer, and don't try it again. Call goal_blocked only when you truly "
+    "can't go on without the user. Don't end your turn without calling one "
+    "of the two.")
+
+STEERING_TEXT = (
+    "The user may send you a message while you are working; it arrives "
+    "as 'The user sent this while you were working: ...'. It is their "
+    "latest instruction: take it into account straight away, adjust your "
+    "plan rather than starting over, and keep what you have already done "
+    "in mind.")
+
+
+def system_prompt(shell, mode='ask', personal='', memory='', guardrails=None,
+                  goal=False):
     """The agent's instructions, including what the user has told us about
     themselves (personal), what it remembers (memory), and their rules
-    (guardrails, a list of lines)"""
+    (guardrails, a list of lines). With goal, the agent works on its own
+    until it reaches the goal."""
     shell = os.path.basename(shell or 'sh')
     parts = [
         "You are the Promptline terminal agent. The user called you from "
@@ -97,7 +122,11 @@ def system_prompt(shell, mode='ask', personal='', memory='', guardrails=None):
 
         "Be careful with destructive commands: say what they will affect. "
         "When you are done, say in a sentence or two what you found or did.",
+
+        STEERING_TEXT,
     ]
+    if goal:
+        parts.append(GOAL_TEXT)
     text = ' '.join(parts[:3]) + '\n\n' + '\n\n'.join(parts[3:])
     if personal:
         text += ('\n\nAbout the user, in their own words:\n' + personal)
@@ -150,3 +179,10 @@ def user_message(request):
     """The message for this invocation: fresh context, then the question"""
     return {'role': 'user', 'content': '%s\n\nRequest: %s' % (
         context_text(request), request.get('query', ''))}
+
+
+def goal_message(request, goal, resumed=False):
+    """The message that sets a goal, or picks an unfinished one up again"""
+    what = 'Carry on towards the goal: ' if resumed else 'Goal: '
+    return {'role': 'user', 'content': '%s\n\nRequest: %s%s' % (
+        context_text(request), what, goal)}

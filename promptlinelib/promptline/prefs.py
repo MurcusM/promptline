@@ -12,8 +12,8 @@ from gi.repository import Gtk
 
 from ..translation import _
 from . import personal
-from .providers import (PRESETS, connection, needs_key, provider_settings,
-                        resolve_api_key)
+from .providers import (PRESETS, connection, key_problem, needs_key,
+                        provider_settings, resolve_api_key)
 
 REASONING = ['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh']
 
@@ -45,6 +45,7 @@ class PromptlinePage(object):
         self.key_status = None
         self.reverting_mode = False
         self.widgets = {}
+        self.key_rows = {}
 
         self.heading(_('Promptline'))
         self.note(_('With these off, Promptline behaves exactly like '
@@ -65,6 +66,7 @@ class PromptlinePage(object):
         self.check('predict_next',
                    _('Predict the next command on an empty prompt'))
         self.provider_chooser('autocomplete')
+        self.key_file('autocomplete')
         self.entry('autocomplete_model', _('Model'))
         self.reasoning('autocomplete_reasoning', _('Reasoning effort'))
 
@@ -79,9 +81,20 @@ class PromptlinePage(object):
         self.heading(_('@agent'))
         self.note(_('Type "@agent" and a question or task at the prompt.'))
         self.provider_chooser('agent')
+        self.key_file('agent')
         self.entry('agent_model', _('Model'))
         self.reasoning('agent_reasoning', _('Reasoning effort'))
         self.mode_chooser()
+        self.spin('agent_max_steps', _('Step limit'), 1, 200)
+        self.note(_('How many model replies one @agent request may take '
+                    'before it stops. Say "@agent continue" to carry on. '
+                    '"@agent --goal ..." works until its goal is reached '
+                    'and has no limit.'))
+        self.spin('goal_approval_wait', _('Goal: wait for approval (minutes)'),
+                  0, 1440)
+        self.note(_('In a goal run, a command that needs your approval is '
+                    'skipped if you do not answer in this time, and the '
+                    'agent carries on with other work. 0 waits for ever.'))
 
         self.heading(_('Default provider'))
         self.note(_('Used by prediction and @agent unless they choose '
@@ -98,7 +111,8 @@ class PromptlinePage(object):
         self.entry('api_key_env', _('Key environment variable'))
         self.key_file()
         self.refresh_placeholders()
-        self.key_status = Gtk.Label(xalign=0)
+        self.refresh_key_rows()
+        self.key_status = Gtk.Label(xalign=0, wrap=True, max_width_chars=70)
         self.attach(self.key_status)
         self.update_key_status()
 
@@ -138,6 +152,14 @@ class PromptlinePage(object):
         entry.connect('changed', lambda e: self.set(key, e.get_text().strip()))
         self.widgets[key] = entry
         self.attach(entry, text)
+
+    def spin(self, key, text, low, high):
+        button = Gtk.SpinButton.new_with_range(low, high, 1)
+        button.set_value(int(self.config['promptline_' + key]))
+        button.connect('value-changed',
+                       lambda b: self.set(key, b.get_value_as_int()))
+        self.widgets[key] = button
+        self.attach(button, text)
 
     def reasoning(self, key, text):
         combo = Gtk.ComboBoxText.new_with_entry()
@@ -209,27 +231,44 @@ class PromptlinePage(object):
             box.pack_start(button, False, False, 0)
         self.attach(box)
 
-    def key_file(self):
+    def key_file(self, purpose=None):
+        """The key file of the default provider, or of a purpose that uses
+        a different one (that row only shows while it does)"""
+        key = (purpose + '_' if purpose else '') + 'api_key_file'
         box = Gtk.Box(spacing=6)
-        entry = Gtk.Entry(text=self.config['promptline_api_key_file'],
+        entry = Gtk.Entry(text=self.config['promptline_' + key],
                           hexpand=True,
                           placeholder_text=_('optional, e.g. '
                                              '~/.config/promptline/api-key'))
-        self.key_file_entry = entry
         entry.connect('changed',
-                      lambda e: self.set('api_key_file', e.get_text().strip()))
+                      lambda e: self.set(key, e.get_text().strip()))
         choose = Gtk.Button(label=_('Choose...'))
         choose.connect('clicked', self.on_choose_key_file, entry)
         box.pack_start(entry, True, True, 0)
         box.pack_start(choose, False, False, 0)
         self.attach(box, _('Key file'))
+        self.widgets[key] = entry
+        if purpose:
+            row = [self.grid.get_child_at(0, self.row - 1), box]
+            for widget in row:
+                widget.set_no_show_all(True)
+            self.key_rows[purpose] = row
+
+    def refresh_key_rows(self):
+        """A purpose's own key file is only needed for a different provider
+        from the default, which would otherwise use the default's file"""
+        default = self.config['promptline_provider']
+        for purpose, row in self.key_rows.items():
+            own = self.config['promptline_%s_provider' % purpose]
+            for widget in row:
+                widget.set_visible(bool(own) and own != default)
 
     # Behaviour
 
     def set(self, key, value):
         self.config['promptline_' + key] = value
         self.config.save()
-        if key.startswith('api_key') and self.key_status is not None:
+        if 'api_key' in key and self.key_status is not None:
             self.update_key_status()
 
     def on_provider_changed(self, combo, purpose):
@@ -242,11 +281,9 @@ class PromptlinePage(object):
             return
         for field in ('base_url', 'api_key_env', 'api_key_file'):
             self.set(prefix + field, '')
-            if not purpose and field in self.widgets:
-                self.widgets[field].set_text('')
+            if prefix + field in self.widgets:
+                self.widgets[prefix + field].set_text('')
         self.set(prefix + 'provider', name)
-        if not purpose:
-            self.key_file_entry.set_text('')
         preset = PRESETS.get(name)
         for kind in [purpose] if purpose else ('autocomplete', 'agent'):
             if preset is None or (
@@ -258,6 +295,7 @@ class PromptlinePage(object):
                 # Other servers may reject OpenAI's reasoning_effort
                 self.widgets[kind + '_reasoning'].set_text('')
         self.refresh_placeholders()
+        self.refresh_key_rows()
         self.update_key_status()
 
     def refresh_placeholders(self):
@@ -274,22 +312,20 @@ class PromptlinePage(object):
         found = {}
         for purpose in ('agent', 'autocomplete'):
             settings = provider_settings(purpose, self.config)
-            found[purpose] = (bool(resolve_api_key(settings)
-                                   or not needs_key(connection(settings)[1])),
-                              connection(settings)[2] or _('a key'))
+            if resolve_api_key(settings) or \
+                    not needs_key(connection(settings)[1]):
+                found[purpose] = _('An API key was found.')
+            else:
+                found[purpose] = (_('No API key found: ') +
+                                  (key_problem(settings) or
+                                   _('set a key variable or a key file')) +
+                                  '.')
         if found['agent'] == found['autocomplete']:
-            lines = [self.key_message(*found['agent'])]
+            lines = [found['agent']]
         else:
-            lines = [_('@agent: ') + self.key_message(*found['agent']),
-                     _('Prediction: ') +
-                     self.key_message(*found['autocomplete'])]
+            lines = [_('@agent: ') + found['agent'],
+                     _('Prediction: ') + found['autocomplete']]
         self.key_status.set_text('\n'.join(lines))
-
-    @staticmethod
-    def key_message(found, name):
-        if found:
-            return _('An API key was found.')
-        return _('No API key found: set %s or a key file.') % name
 
     def on_choose_key_file(self, button, entry):
         dialog = Gtk.FileChooserDialog(

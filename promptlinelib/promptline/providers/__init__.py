@@ -61,7 +61,14 @@ import os
 import urllib.parse
 
 from ...config import Config
+from ...translation import _
 from ...util import err
+from ...version import APP_VERSION
+
+# Sent with every request. Python's own default is blocked outright by the
+# Cloudflare firewall in front of some APIs (OpenCode Zen answers it with a
+# 403, error code 1010, before the request reaches the API)
+USER_AGENT = 'promptline/%s' % APP_VERSION
 
 
 class ProviderError(Exception):
@@ -126,6 +133,32 @@ def connection(settings):
     return name, base_url, key_env
 
 
+def clean_key(text, key_env=''):
+    """The key in the text of a key file. People write it as the shell
+    would, so 'export NAME=' and quotes around the key are tolerated, when
+    NAME is the variable this provider uses.
+
+    >>> clean_key(' sk-abc\\n')
+    'sk-abc'
+    >>> clean_key('export OPENCODE_API_KEY="sk-abc"\\n', 'OPENCODE_API_KEY')
+    'sk-abc'
+    >>> clean_key('OPENCODE_API_KEY=sk-abc', 'OPENCODE_API_KEY')
+    'sk-abc'
+    >>> clean_key('OTHER=sk-abc', 'OPENCODE_API_KEY')
+    'OTHER=sk-abc'
+    >>> clean_key('  \\n') is None
+    True
+    """
+    key = text.strip()
+    if key.startswith('export '):
+        key = key[len('export '):].lstrip()
+    if key_env and key.startswith(key_env + '='):
+        key = key[len(key_env) + 1:].strip()
+        if len(key) > 1 and key[0] == key[-1] and key[0] in '"\'':
+            key = key[1:-1]
+    return key or None
+
+
 def resolve_api_key(config, environ=None):
     """Find the API key without ever writing it anywhere"""
     environ = os.environ if environ is None else environ
@@ -136,12 +169,37 @@ def resolve_api_key(config, environ=None):
     if path:
         try:
             with open(os.path.expanduser(path), encoding='utf-8') as handle:
-                key = handle.read().strip()
-            return key or None
+                return clean_key(handle.read(), connection(config)[2])
         except OSError as ex:
             err('promptline: unable to read API key file %s: %s' %
                 (path, ex.strerror))
     return None
+
+
+def key_problem(settings, environ=None):
+    """Why resolve_api_key() found nothing, as a short sentence for the
+    user. An app started from a menu doesn't see variables that are only
+    exported in shell startup files, which is the usual cause."""
+    environ = os.environ if environ is None else environ
+    name = connection(settings)[2]
+    reasons = []
+    if name:
+        if name in environ:
+            reasons.append(_('%s is set but empty') % name)
+        else:
+            reasons.append(_('%s is not set in the environment Promptline '
+                             'was started with') % name)
+    path = settings['promptline_api_key_file']
+    if path:
+        path = os.path.expanduser(path)
+        try:
+            with open(path, encoding='utf-8') as handle:
+                if not handle.read().strip():
+                    reasons.append(_('the key file %s is empty') % path)
+        except OSError as ex:
+            reasons.append(_('the key file %s can\'t be read (%s)')
+                           % (path, ex.strerror))
+    return '; '.join(reasons)
 
 
 def missing_key_hint(settings):
@@ -165,13 +223,21 @@ SETTINGS = ('provider', 'base_url', 'api_key_env', 'api_key_file')
 def provider_settings(purpose, config=None):
     """The provider settings for 'autocomplete' or 'agent' as a plain dict
     (no key in it), so they can be handed to the agent process. A purpose
-    that names its own provider takes the whole connection from its own
-    settings, so that nothing is mixed with the default provider's URL."""
+    that names a different provider from the default takes the whole
+    connection from its own settings, so that nothing is mixed with the
+    default provider's URL or key. One that names the same provider, or
+    none, shares the default's connection, and what it sets itself wins."""
     config = Config() if config is None else config
     own = 'promptline_%s_' % purpose
-    prefix = own if config[own + 'provider'] else 'promptline_'
-    settings = dict(('promptline_' + name, config[prefix + name])
-                    for name in SETTINGS)
+    name = config[own + 'provider']
+    if name and name != config['promptline_provider']:
+        settings = dict(('promptline_' + field, config[own + field])
+                        for field in SETTINGS)
+    else:
+        settings = dict(('promptline_' + field,
+                         (config[own + field] if name else '') or
+                         config['promptline_' + field])
+                        for field in SETTINGS)
     settings['model'] = config['promptline_%s_model' % purpose]
     settings['reasoning'] = config['promptline_%s_reasoning' % purpose]
     return settings

@@ -124,6 +124,34 @@ def test_direct_providers(monkeypatch, name, url, key_env):
     assert other.base_url == 'http://h/v1'
 
 
+def test_a_purpose_naming_the_default_provider_shares_its_key_file(
+        monkeypatch, tmp_path):
+    """The same provider chosen for @agent and prediction must not lose the
+    default's key file (it did: each purpose's own settings were empty)"""
+    monkeypatch.delenv('OPENCODE_API_KEY', raising=False)
+    key = tmp_path / 'api-key'
+    key.write_text('OPENCODE_API_KEY=zen-key\n')
+    config = FakeConfig(promptline_provider='opencode',
+                        promptline_api_key_file=str(key),
+                        promptline_agent_provider='opencode',
+                        promptline_autocomplete_provider='opencode',
+                        promptline_agent_model='claude-sonnet-5-5')
+    for purpose in ('agent', 'autocomplete'):
+        settings = provider_settings(purpose, config)
+        assert settings['promptline_api_key_file'] == str(key)
+        assert providers.resolve_api_key(settings) == 'zen-key'
+    assert make_provider('agent', provider_settings('agent', config)).api_key \
+        == 'zen-key'
+    # What the purpose sets itself wins
+    config['promptline_agent_base_url'] = 'https://gateway.example/v1'
+    assert provider_settings('agent', config)['promptline_base_url'] == \
+        'https://gateway.example/v1'
+    # A different provider never borrows the default's key file
+    config['promptline_autocomplete_provider'] = 'deepseek'
+    other = provider_settings('autocomplete', config)
+    assert other['promptline_api_key_file'] == ''
+
+
 def test_openai_stays_the_default():
     assert providers.connection(settings_for('agent')) == (
         'openai', 'https://api.openai.com/v1', 'OPENAI_API_KEY')
@@ -224,6 +252,22 @@ def test_anthropic_gateways_get_a_bearer_token_too(server):
     assert server.requests[0][1]['authorization'] == 'Bearer zen-key'
 
 
+def test_requests_say_who_they_are(server):
+    """Python's default User-Agent gets a 403 from OpenCode's firewall"""
+    server.reply = lambda path, body: message_reply(
+        {'type': 'text', 'text': 'ls'})
+    AnthropicProvider(server.url, 'k', 'claude-x').complete(
+        [{'role': 'user', 'content': 'x'}])
+    server.reply = lambda path, body: {'choices': [
+        {'message': {'role': 'assistant', 'content': 'ls'}}]}
+    OpenAIProvider(server.url, 'k', 'kimi-x').complete(
+        [{'role': 'user', 'content': 'x'}])
+    agents = [headers['user-agent'] for _path, headers, _body in
+              server.requests]
+    assert len(agents) == 2
+    assert all(agent.startswith('promptline/') for agent in agents)
+
+
 def test_anthropic_streams(server):
     server.stream = True
     server.reply = lambda path, body: [
@@ -265,3 +309,15 @@ def test_openai_responses_only_servers_get_every_request_there(server):
     assert chat.chat([{'role': 'user', 'content': 'x'}], TOOLS)[
         'content'] == 'pwd'
     assert server.requests[1][0] == '/chat/completions'
+
+
+def test_key_problem_says_why(tmp_path):
+    base = settings_for('agent', promptline_provider='opencode')
+    assert 'OPENCODE_API_KEY is not set' in providers.key_problem(base, {})
+    assert 'is set but empty' in providers.key_problem(
+        base, {'OPENCODE_API_KEY': ''})
+    missing = dict(base, promptline_api_key_file=str(tmp_path / 'nope'))
+    assert "can't be read" in providers.key_problem(missing, {})
+    (tmp_path / 'empty').write_text('\n')
+    empty = dict(base, promptline_api_key_file=str(tmp_path / 'empty'))
+    assert 'is empty' in providers.key_problem(empty, {})

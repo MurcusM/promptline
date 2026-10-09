@@ -66,7 +66,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from . import ProviderError
+from . import USER_AGENT, ProviderError
 from .openai import error_message, iter_sse
 
 API_VERSION = '2023-06-01'
@@ -104,6 +104,7 @@ class AnthropicProvider(object):
 
     def headers(self):
         headers = {'Content-Type': 'application/json',
+                   'User-Agent': USER_AGENT,
                    'anthropic-version': API_VERSION}
         if self.api_key:
             headers['x-api-key'] = self.api_key
@@ -172,6 +173,9 @@ def to_messages(messages):
                 turns.append({'role': 'assistant', 'content': blocks})
         elif message.get('content'):
             turns.append({'role': 'user', 'content': message['content']})
+    if turns and turns[0]['role'] != 'user':
+        # The API wants the conversation to start with the user
+        turns.insert(0, {'role': 'user', 'content': '(continuing)'})
     return '\n\n'.join(part for part in system if part), turns
 
 

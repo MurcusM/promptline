@@ -399,7 +399,8 @@ def test_agent(name, home, history, agent_setup):
         assert "Request: what's wrong?" in request
         assert 'ls /nonexistent-dir' in request and '[exit 2]' in request
         result = json.loads(server.requests[1]['messages'][-1]['content'])
-        assert result == {'exit_status': 0, 'output': 'agent-ran'}
+        assert result == {'exit_status': 0, 'output': 'agent-ran',
+                          'approved': 'by the user'}
 
         # History has the question, not the launcher; the agent's run isn't
         # learned as a command
@@ -434,9 +435,10 @@ def test_termprops_registered_before_first_terminal():
     assert 'CRITICAL' not in result.stderr
 
 
-def scripted(server, steps, review=None):
-    """Make the fake server play `steps` as the agent's replies, and answer
-    auto-review requests with review(command) -> (verdict, reason)"""
+def scripted(server, steps, review=None, delay=0):
+    """Make the fake server play `steps` as the agent's replies (each after
+    `delay` seconds), and answer auto-review requests with
+    review(command) -> (verdict, reason)"""
     import json
 
     def do_POST(handler):
@@ -452,6 +454,7 @@ def scripted(server, steps, review=None):
             server.reviews.append(command)
         else:
             server.requests.append(body)
+            time.sleep(delay)
             message = dict({'role': 'assistant', 'content': None},
                            **steps[len(server.requests) - 1])
         data = json.dumps({'choices': [{'message': message}]}).encode()
@@ -748,3 +751,127 @@ def test_agent_streams_reviews(home, history, agent_setup, monkeypatch):
     assert agent_done(terminal, session), screen_text(terminal)
     screen = screen_text(terminal)
     assert '$ echo looked\n  reviewer: it only prints text.\nlooked' in screen
+
+
+def test_agent_step_limit_is_a_setting(home, history, agent_setup,
+                                       monkeypatch):
+    monkeypatch.setattr(controller_module, 'Config', lambda: {
+        'promptline_agent_mode': 'ask',
+        'promptline_review_reasoning': 'low',
+        'promptline_agent_max_steps': 2})
+    scripted(agent_setup, [
+        {'tool_calls': [tool_call('run_command', command='echo one',
+                                  reason='r')]},
+        {'tool_calls': [tool_call('run_command', command='echo two',
+                                  reason='r')]},
+        {'content': 'never reached'},
+    ])
+    terminal, session, controller = start_shell(
+        shutil.which('bash'), str(home), {}, with_controller=True)
+    run_agent(terminal, session, controller, 'keep going')
+    for _ in range(2):
+        assert wait_for(lambda: screen_text(terminal).count('[a]pprove') >
+                        _, timeout=30), screen_text(terminal)
+        terminal.vte.feed_child(b'a')
+    assert wait_for(lambda: 'Stopped after 2 steps' in screen_text(terminal),
+                    timeout=30), screen_text(terminal)
+    assert len(agent_setup.requests) == 2
+
+
+def test_agent_goal_runs_until_it_is_reached(home, history, agent_setup,
+                                             monkeypatch):
+    monkeypatch.setattr(controller_module, 'Config', lambda: {
+        'promptline_agent_mode': 'ask',
+        'promptline_review_reasoning': 'low',
+        'promptline_agent_max_steps': 1,
+        'promptline_goal_approval_wait': 0})
+    scripted(agent_setup, [
+        {'tool_calls': [tool_call('run_command', command='echo first',
+                                  reason='r')]},
+        {'tool_calls': [tool_call('run_command', command='echo second',
+                                  reason='r')]},
+        {'tool_calls': [tool_call('goal_complete',
+                                  summary='All done. Both ran.')]},
+    ])
+    terminal, session, controller = start_shell(
+        shutil.which('bash'), str(home), {}, with_controller=True)
+    run_agent(terminal, session, controller, '--goal run two commands')
+    for _ in range(2):
+        assert wait_for(lambda: screen_text(terminal).count('[a]pprove') >
+                        _, timeout=30), screen_text(terminal)
+        terminal.vte.feed_child(b'a')
+    assert agent_done(terminal, session), screen_text(terminal)
+
+    # The step limit of 1 doesn't apply to a goal
+    assert len(agent_setup.requests) == 3
+    first = agent_setup.requests[0]
+    assert 'goal_complete' in [t['function']['name'] for t in first['tools']]
+    assert 'You have been given a GOAL' in first['messages'][0]['content']
+    assert first['messages'][-1]['content'].endswith(
+        'Request: Goal: run two commands')
+    screen = screen_text(terminal)
+    assert 'Goal reached. All done. Both ran.' in screen
+    assert '@agent --goal run two commands' in screen
+
+
+def test_agent_can_be_steered_while_it_thinks(home, history, agent_setup,
+                                              monkeypatch):
+    monkeypatch.setattr(controller_module, 'Config', lambda: {
+        'promptline_agent_mode': 'ask',
+        'promptline_review_reasoning': 'low'})
+    scripted(agent_setup, [
+        {'tool_calls': [tool_call('run_command', command='echo one',
+                                  reason='r')]},
+        {'content': 'All done.'},
+    ], delay=2)
+    terminal, session, controller = start_shell(
+        shutil.which('bash'), str(home), {}, with_controller=True)
+    run_agent(terminal, session, controller, 'do the thing')
+    assert wait_for(lambda: 'Type to steer' in screen_text(terminal),
+                    timeout=30), screen_text(terminal)
+    terminal.vte.feed_child(b'use port 8080 instead\r')
+    assert wait_for(lambda: '[a]pprove' in screen_text(terminal),
+                    timeout=30), screen_text(terminal)
+    terminal.vte.feed_child(b'a')
+    assert agent_done(terminal, session), screen_text(terminal)
+
+    follow_up = agent_setup.requests[1]['messages']
+    assert follow_up[-1]['content'] == \
+        'The user sent this while you were working: use port 8080 instead'
+    assert 'You: use port 8080 instead' in screen_text(terminal)
+    # It was read by the agent, not left for the shell to run
+    assert 'use port 8080' not in [r.command for r in session.log]
+
+
+def test_agent_goal_survives_ctrl_c_and_resumes(home, history, agent_setup,
+                                                monkeypatch):
+    monkeypatch.setattr(controller_module, 'Config', lambda: {
+        'promptline_agent_mode': 'ask',
+        'promptline_review_reasoning': 'low',
+        'promptline_goal_approval_wait': 0})
+    scripted(agent_setup, [
+        {'tool_calls': [tool_call('run_command', command='echo one',
+                                  reason='r')]},
+        {'tool_calls': [tool_call('goal_complete', summary='All done.')]},
+    ])
+    terminal, session, controller = start_shell(
+        shutil.which('bash'), str(home), {}, with_controller=True)
+    run_agent(terminal, session, controller, '--goal tidy the repo')
+    assert wait_for(lambda: '[a]pprove' in screen_text(terminal),
+                    timeout=30), screen_text(terminal)
+    terminal.vte.feed_child(b'\x03')
+    assert wait_for(lambda: 'Interrupted. Say "@agent --goal" to resume' in
+                    screen_text(terminal) and
+                    session.state == session.PROMPT,
+                    timeout=30), screen_text(terminal)
+
+    # A bare --goal picks the unfinished goal up where it stopped
+    run_agent(terminal, session, controller, '--goal')
+    assert agent_done(terminal, session), screen_text(terminal)
+    resumed = agent_setup.requests[1]['messages']
+    assert resumed[-1]['content'].endswith(
+        'Request: Carry on towards the goal: tidy the repo')
+    assert any('Goal: tidy the repo' in (m.get('content') or '')
+               for m in resumed)
+    # The command that was never answered isn't left hanging in the history
+    assert not any(m.get('tool_calls') for m in resumed)
