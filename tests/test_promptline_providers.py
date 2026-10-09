@@ -252,6 +252,22 @@ def test_anthropic_gateways_get_a_bearer_token_too(server):
     assert server.requests[0][1]['authorization'] == 'Bearer zen-key'
 
 
+def test_requests_say_who_they_are(server):
+    """Python's default User-Agent gets a 403 from OpenCode's firewall"""
+    server.reply = lambda path, body: message_reply(
+        {'type': 'text', 'text': 'ls'})
+    AnthropicProvider(server.url, 'k', 'claude-x').complete(
+        [{'role': 'user', 'content': 'x'}])
+    server.reply = lambda path, body: {'choices': [
+        {'message': {'role': 'assistant', 'content': 'ls'}}]}
+    OpenAIProvider(server.url, 'k', 'kimi-x').complete(
+        [{'role': 'user', 'content': 'x'}])
+    agents = [headers['user-agent'] for _path, headers, _body in
+              server.requests]
+    assert len(agents) == 2
+    assert all(agent.startswith('promptline/') for agent in agents)
+
+
 def test_anthropic_streams(server):
     server.stream = True
     server.reply = lambda path, body: [
