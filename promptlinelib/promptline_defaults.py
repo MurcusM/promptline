@@ -38,6 +38,12 @@ GLOBAL_DEFAULTS = {
     'promptline_agent_reasoning': 'xhigh',
     # ask | auto-review | full. Full also needs the user's guardrails
     'promptline_agent_mode': 'ask',
+    # How many model replies one @agent request may take. @agent --goal
+    # has no limit
+    'promptline_agent_max_steps': 25,
+    # Minutes a goal run waits for an approval before skipping that command
+    # and carrying on with other work. 0 waits for ever
+    'promptline_goal_approval_wait': 15,
     'promptline_review_reasoning': 'medium',
 }
 

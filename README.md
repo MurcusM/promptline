@@ -48,9 +48,38 @@ already sees what's in the terminal, so you don't paste anything:
 - for things that must happen in your own shell (`cd`, `export`, activating
   an environment) it types the command at your prompt, and you decide
   whether to press Enter;
-- follow-up questions in the same terminal continue the conversation;
+- follow-up questions in the same terminal continue the conversation, for
+  30 minutes, so `@agent continue` carries on where it stopped;
+- it stops after a number of steps (25 by default; Preferences → Promptline →
+  Step limit, or `promptline_agent_max_steps`). A step is one model reply;
 - it's a normal program in your terminal: Ctrl+C stops it, replies appear as
   they are written, and its output is ordinary scrollback.
+
+**Goals.** `@agent --goal fix the failing tests` gives the agent a goal to
+work on until it is reached, with no step limit. It keeps going on its own,
+checks its work, and ends with "Goal reached" and a summary, or "Blocked" and
+what it needs from you. Along the way:
+
+- passing provider errors (rate limits, timeouts) are retried;
+- a command that fails the same way six times in a row ends the run, instead
+  of going round in circles;
+- long runs are summarised as they go, so they don't run out of context;
+- a command that needs your approval waits 15 minutes (Preferences, or
+  `promptline_goal_approval_wait`; 0 waits for ever), then is skipped, never
+  approved, and the agent carries on with other work and reports what was
+  left waiting;
+- Ctrl+C stops it and keeps the conversation: `@agent --goal` on its own
+  resumes the unfinished goal.
+
+Goals ask before each command in the default mode. To leave one running while
+you're away, use auto-review or full permission (below).
+
+**Steering.** While the agent is thinking, anything you type is sent to it
+when you press Enter ("Type to steer" shows on the spinner line). It reads
+your message before its next step and adjusts instead of starting over. If
+you steer while a command is waiting to run unseen (auto-review or full
+permission), that command is skipped so the agent can reconsider. While one
+of the agent's commands is running, your keys go to that command, as always.
 
 **Personalisation.** Tell Promptline about your work once with `promptline -P`:
 your role, day-to-day tasks, the tools you use and avoid, your environments.
@@ -72,6 +101,11 @@ step gets in the way:
 | Ask (default) | Nothing. Every command waits for approve / edit / cancel. |
 | Auto-review | Commands a separate reviewer model judges safe. Anything else asks, with the reviewer's reason. |
 | Full permission | Everything except a short list of catastrophic commands. Locked until you've written your own guardrails (`promptline --guardrails`), which the agent must follow. |
+
+The auto-review reviewer sees the conversation so far (what you asked, what
+you said while the agent worked, what it has run, and what you approved or
+declined), not just the latest line, so a follow-up like `@agent continue` is
+judged in context.
 
 In every mode, a built-in list of dangerous commands (wiping disks, deleting
 system directories, piping downloads into a shell, firewall flushes,
@@ -159,6 +193,8 @@ Open **Preferences → Promptline**, or edit `~/.config/promptline/config`:
 | `promptline_api_key_file` | *(empty)* | File holding the key (use `chmod 600`) |
 | `promptline_autocomplete_provider` / `promptline_agent_provider` | *(empty)* | A different provider for prediction or `@agent`; empty uses `promptline_provider` |
 | `promptline_agent_mode` | `ask` | `ask`, `auto-review` or `full` (full needs guardrails) |
+| `promptline_agent_max_steps` | `25` | Model replies one `@agent` request may take (not for `--goal`) |
+| `promptline_goal_approval_wait` | `15` | Minutes a goal run waits for an approval before skipping that command; `0` waits for ever |
 | `promptline_review_reasoning` | `medium` | Reasoning effort of the auto-review reviewer |
 
 | Command | File |

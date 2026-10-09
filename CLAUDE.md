@@ -125,7 +125,9 @@ All Promptline code is in `promptlinelib/promptline/`:
 | `providers/` | `PRESETS`, `make_provider`, key resolution; `openai.py` (Chat Completions; Responses for OpenAI tool calls and Zen's GPT models), `anthropic.py` (Messages API) |
 | `agent/` | `@agent`: request handoff (`__init__`), `loop.py`, `tools.py` (`run_command`, `place_on_prompt`, `remember`, `forget`), `prompts.py` (mode text, personalisation, memory, guardrails), `cli.py` (the `promptline-agent` program: policy choice, audit log, streaming UI) |
 | `personal.py` | The user's files: personalisation, guardrails (`guardrails_ready`), memory (`Memory`), editing (`promptline -P/--guardrails/--memory`, hooked in `optionparse.py`) |
-| `agent/approval.py` | Permission modes: `AskEveryTime`, `AutoReview` + `ModelReviewer`, `FullPermission`; `HARD_STOPS` |
+| `agent/approval.py` | Permission modes: `AskEveryTime`, `AutoReview` + `ModelReviewer` (sees the conversation through `digest`), `FullPermission`; `HARD_STOPS` |
+| `agent/digest.py` | A conversation as short text, for the reviewer and for summarising long runs |
+| `agent/steering.py` | `LineBuffer`/`Steering`: lines the user types while the agent waits for the model |
 | `prefs.py` | Preferences → Promptline page, built in code |
 
 **Flow.** The shell emits marks, `Controller.on_termprops_changed` applies them in
@@ -189,6 +191,17 @@ The controller types that at the next prompt. This needs no D-Bus, so it works w
   clears the key file, so one provider's key is never sent to another.
 - OpenCode Zen: model name decides the API (`opencode_api`); Gemini models need Google's
   format and give an `Unsupported` provider whose error explains why.
+- Agent loop (`agent/loop.py`): `@agent --goal` runs with no step limit and has its own
+  exits (`goal_complete`, `goal_blocked`, nudges, six identical failures); never add a
+  way for a goal run to approve a command by itself: an approval nobody answers is
+  *skipped*, never allowed. Steering is polled only while `TtyUI.thinking()` runs (the
+  terminal is in cbreak then, no echo; the spinner line shows the typed text); during a
+  command the keys belong to the command. Messages that arrive before an unseen
+  (auto/full) command runs make it skip. Tool results carry `approved: by the user` so
+  the reviewer's digest can tell. A run that is interrupted keeps its conversation
+  through `repair()`, which drops tool calls that never got results.
+- The reviewer's request used to be only the current line ("continue"); keep giving it
+  `history` (set by `AutoReview.attach`).
 - OpenAI: tools combined with `reasoning_effort` are rejected on Chat Completions for
   reasoning models, so they go through the Responses API with encrypted reasoning
   carried in `_reasoning`. Reasoning tokens count against the output limit

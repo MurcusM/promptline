@@ -38,6 +38,15 @@ PREDICT_MIN_TYPED = 2
 AGENT_LAUNCHER = '_promptline_agent'
 
 
+def setting(key):
+    """A Promptline setting; None if there is no such key (a stand-in
+    Config in a test may leave some out)"""
+    try:
+        return Config()[key]
+    except KeyError:
+        return None
+
+
 class VteScreen(object):
     """The screen interface ShellSession expects, backed by a Vte.Terminal"""
     def __init__(self, vte):
@@ -307,6 +316,8 @@ class Controller(object):
             'agent': {
                 'mode': Config()['promptline_agent_mode'],
                 'review_reasoning': Config()['promptline_review_reasoning'],
+                'max_steps': setting('promptline_agent_max_steps'),
+                'approval_wait': setting('promptline_goal_approval_wait'),
             },
         }
         try:

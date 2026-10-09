@@ -85,6 +85,16 @@ class PromptlinePage(object):
         self.entry('agent_model', _('Model'))
         self.reasoning('agent_reasoning', _('Reasoning effort'))
         self.mode_chooser()
+        self.spin('agent_max_steps', _('Step limit'), 1, 200)
+        self.note(_('How many model replies one @agent request may take '
+                    'before it stops. Say "@agent continue" to carry on. '
+                    '"@agent --goal ..." works until its goal is reached '
+                    'and has no limit.'))
+        self.spin('goal_approval_wait', _('Goal: wait for approval (minutes)'),
+                  0, 1440)
+        self.note(_('In a goal run, a command that needs your approval is '
+                    'skipped if you do not answer in this time, and the '
+                    'agent carries on with other work. 0 waits for ever.'))
 
         self.heading(_('Default provider'))
         self.note(_('Used by prediction and @agent unless they choose '
@@ -142,6 +152,14 @@ class PromptlinePage(object):
         entry.connect('changed', lambda e: self.set(key, e.get_text().strip()))
         self.widgets[key] = entry
         self.attach(entry, text)
+
+    def spin(self, key, text, low, high):
+        button = Gtk.SpinButton.new_with_range(low, high, 1)
+        button.set_value(int(self.config['promptline_' + key]))
+        button.connect('value-changed',
+                       lambda b: self.set(key, b.get_value_as_int()))
+        self.widgets[key] = button
+        self.attach(button, text)
 
     def reasoning(self, key, text):
         combo = Gtk.ComboBoxText.new_with_entry()

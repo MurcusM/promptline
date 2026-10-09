@@ -37,6 +37,25 @@ Decision(action='allow', note='reviewer: read-only')
 >>> AutoReview(lambda command, reason: ('ask', 'stops a service')).decide(
 ...     'systemctl stop nginx')
 Decision(action='ask', note='Reviewer: stops a service')
+>>> sent = []
+>>> class Provider(object):
+...     def complete(self, messages, max_tokens, on_text=None):
+...         sent.append(messages[-1]['content']); return 'SAFE: same as before'
+>>> history = [{'role': 'user', 'content': 'ctx\\n\\nRequest: scan the lab'},
+...            {'role': 'tool', 'tool_call_id': 'c', 'content':
+...             '{"exit_status": 0, "output": "ok", "approved": "by the user"}'}]
+>>> reviewer = ModelReviewer(Provider(), 'continue', '/lab', [],
+...                          history=lambda: history)
+>>> reviewer('nmap -sV 10.0.0.5', 'next host')
+('safe', 'same as before')
+>>> print(sent[0])
+Current request: continue
+Conversation so far, oldest first:
+User: scan the lab
+  -> exit 0 (the user approved it): ok
+Current directory: /lab
+Agent's stated reason: next host
+Command: nmap -sV 10.0.0.5
 >>> parse_verdict('SAFE: lists files.')
 ('safe', 'lists files.')
 >>> parse_verdict('**Ask** - it restarts nginx')
@@ -52,6 +71,8 @@ Decision(action='ask', note='Reviewer: stops a service')
 import collections
 import json
 import re
+
+from .digest import digest
 
 ASK = 'ask'         # show Approve / Edit / Cancel
 ALLOW = 'allow'     # run without asking
@@ -116,6 +137,11 @@ class AskEveryTime(object):
         """Called with the user's answer, for policies that learn"""
         pass
 
+    def attach(self, agent):
+        """Called once the agent exists, for policies that need to see its
+        conversation"""
+        pass
+
 
 class FullPermission(AskEveryTime):
     """Commands run without asking, except hard stops"""
@@ -137,6 +163,10 @@ class AutoReview(AskEveryTime):
 
     def __init__(self, reviewer):
         self.reviewer = reviewer
+
+    def attach(self, agent):
+        if hasattr(self.reviewer, 'history'):
+            self.reviewer.history = lambda: agent.messages
 
     def decide(self, command, reason='', on_text=None):
         stop = hard_stop(command)
@@ -167,7 +197,16 @@ REVIEW_PROMPT = (
     "hosts beyond what the request asks for; it doesn't send data off the "
     "machine except to targets the user named; and it breaks none of the "
     "user's guardrails. Otherwise, or if you are unsure, say ASK. "
-    "The agent's stated reason is not evidence that a command is safe.")
+    "The agent's stated reason is not evidence that a command is safe. "
+    "You are also shown the conversation so far: what the user asked, "
+    "what they said while the agent worked, what the agent has run, and "
+    "what the user approved or declined. The current request can be a "
+    "few words, such as \"continue\"; read it in the light of the "
+    "conversation, and judge the command against what the user is really "
+    "asking for. A command the user already approved in this conversation, "
+    "or a small variation on one in the same place and for the same "
+    "purpose, counts in favour of SAFE, unless it reaches further than "
+    "that one did.")
 
 
 # 'SAFE: reason', allowing for markdown emphasis and other dashes
@@ -196,17 +235,21 @@ def parse_verdict(reply):
 
 class ModelReviewer(object):
     """Asks a model whether a command is safe to run unreviewed"""
-    def __init__(self, provider, request, cwd, guardrails):
+    def __init__(self, provider, request, cwd, guardrails, history=None):
         self.provider = provider
         self.request = request
         self.cwd = cwd
         self.guardrails = guardrails
+        self.history = history      # () -> the agent's messages so far
 
     def __call__(self, command, reason, on_text=None):
-        lines = ['User request: %s' % self.request,
-                 'Current directory: %s' % self.cwd,
-                 "Agent's stated reason: %s" % (reason or '(none)'),
-                 'Command: %s' % command]
+        lines = ['Current request: %s' % self.request]
+        conversation = digest(self.history()) if self.history else ''
+        if conversation:
+            lines += ['Conversation so far, oldest first:', conversation]
+        lines += ['Current directory: %s' % self.cwd,
+                  "Agent's stated reason: %s" % (reason or '(none)'),
+                  'Command: %s' % command]
         if self.guardrails:
             lines += ["User's guardrails:"] + list(self.guardrails)
         reply = self.provider.complete(

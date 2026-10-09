@@ -97,6 +97,41 @@ TOOLS = [
     }},
 ]
 
+# Added while the agent works toward a goal (@agent --goal)
+GOAL_TOOLS = [
+    {'type': 'function', 'function': {
+        'name': 'goal_complete',
+        'description': (
+            'Call this when the goal has been reached and you have checked '
+            'that it has. Ends the work. Give a short summary of what you '
+            'did and found.'),
+        'parameters': {
+            'type': 'object',
+            'properties': {
+                'summary': {'type': 'string'},
+            },
+            'required': ['summary'],
+            'additionalProperties': False,
+        },
+    }},
+    {'type': 'function', 'function': {
+        'name': 'goal_blocked',
+        'description': (
+            'Call this only when you cannot make any further progress '
+            'without the user: something you cannot do, access you lack, '
+            'or a decision only they can make. Ends the work. Say what is '
+            'blocking you and what you tried.'),
+        'parameters': {
+            'type': 'object',
+            'properties': {
+                'reason': {'type': 'string'},
+            },
+            'required': ['reason'],
+            'additionalProperties': False,
+        },
+    }},
+]
+
 
 def trim_output(text, limit=OUTPUT_LIMIT):
     """Keep the start and end of long output"""

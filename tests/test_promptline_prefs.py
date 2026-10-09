@@ -24,7 +24,9 @@ def config():
                   'promptline_autocomplete_model',
                   'promptline_autocomplete_reasoning',
                   'promptline_agent_api_key_file',
-                  'promptline_autocomplete_api_key_file'))
+                  'promptline_autocomplete_api_key_file',
+                  'promptline_agent_max_steps',
+                  'promptline_goal_approval_wait'))
     yield config
     for key, value in saved.items():
         config[key] = value
@@ -179,3 +181,12 @@ def test_a_config_that_leaves_out_empty_settings_is_valid(tmp_path):
     parser = ConfigObj(['[global_config]', '  promptline_llm_autocomplete = True'],
                        configspec=Config().base.defaults_to_configspec())
     assert parser.validate(Validator(), preserve_errors=True) is True
+
+
+def test_step_limit_and_goal_wait_are_settings(config):
+    page = prefs.PromptlinePage(config)
+    assert config['promptline_agent_max_steps'] == 25
+    page.widgets['agent_max_steps'].set_value(60)
+    assert config['promptline_agent_max_steps'] == 60
+    page.widgets['goal_approval_wait'].set_value(0)
+    assert config['promptline_goal_approval_wait'] == 0

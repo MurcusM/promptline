@@ -173,6 +173,9 @@ def to_messages(messages):
                 turns.append({'role': 'assistant', 'content': blocks})
         elif message.get('content'):
             turns.append({'role': 'user', 'content': message['content']})
+    if turns and turns[0]['role'] != 'user':
+        # The API wants the conversation to start with the user
+        turns.insert(0, {'role': 'user', 'content': '(continuing)'})
     return '\n\n'.join(part for part in system if part), turns
 
 
