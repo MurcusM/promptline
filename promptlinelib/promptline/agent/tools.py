@@ -24,8 +24,7 @@ import tty
 
 OUTPUT_LIMIT = 16000
 
-TOOLS = [
-    {'type': 'function', 'function': {
+RUN_COMMAND = {'type': 'function', 'function': {
         'name': 'run_command',
         'description': (
             'Run a shell command in the user\'s terminal, after the user '
@@ -44,7 +43,10 @@ TOOLS = [
             'required': ['command', 'reason'],
             'additionalProperties': False,
         },
-    }},
+    }}
+
+TOOLS = [
+    RUN_COMMAND,
     {'type': 'function', 'function': {
         'name': 'place_on_prompt',
         'description': (
@@ -143,7 +145,8 @@ def trim_output(text, limit=OUTPUT_LIMIT):
         text[:head], len(text) - head - tail, text[-tail:])
 
 
-def run_command(command, cwd, shell, sink, terminal=None):
+def run_command(command, cwd, shell, sink, terminal=None,
+                limit=OUTPUT_LIMIT):
     """Run command with shell -c in cwd, copying its output to sink (a
     binary stream) as it arrives. Returns (exit status, output text).
 
@@ -152,11 +155,11 @@ def run_command(command, cwd, shell, sink, terminal=None):
     full-screen programs (installer dialogs, pagers, editors) and password
     prompts work. Ctrl+C interrupts the command and then the agent."""
     if terminal is not None:
-        return run_in_terminal(command, cwd, shell, sink, terminal)
+        return run_in_terminal(command, cwd, shell, sink, terminal, limit)
     process = subprocess.Popen([shell, '-c', command], cwd=cwd,
                                stdout=subprocess.PIPE,
                                stderr=subprocess.STDOUT)
-    chunks = Output()
+    chunks = Output(limit)
     try:
         while True:
             data = os.read(process.stdout.fileno(), 65536)
@@ -175,7 +178,48 @@ def run_command(command, cwd, shell, sink, terminal=None):
     return exit_status(status), chunks.text()
 
 
-def run_in_terminal(command, cwd, shell, sink, terminal):
+def run_quiet(command, cwd, shell, limit, timeout, processes=None):
+    """Run command with shell -c in cwd for a subagent: no terminal and no
+    keyboard, output collected rather than shown, ended after timeout
+    seconds. Returns (exit status, output text). processes, if given, holds
+    the running process so that it can be killed from elsewhere.
+
+    >>> run_quiet('echo hi; echo oops >&2; exit 4', '/', 'sh', 1000, 5)
+    (4, 'hi\\noops')
+    >>> run_quiet('sleep 5', '/', 'sh', 1000, 0.2)[0]
+    124
+    >>> run_quiet('cat', '/', 'sh', 1000, 5)       # nothing to read
+    (0, '')
+    """
+    process = subprocess.Popen([shell, '-c', command], cwd=cwd,
+                               stdin=subprocess.DEVNULL,
+                               stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT,
+                               start_new_session=True)
+    if processes is not None:
+        processes.append(process)
+    timed_out = False
+    try:
+        data, _ = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        data, _ = process.communicate()
+    finally:
+        if processes is not None and process in processes:
+            processes.remove(process)
+    text = plain(data.decode('utf-8', 'replace'))
+    if timed_out:
+        text += '\n[stopped: it ran for more than %g seconds]' % timeout
+        return 124, trim_output(text.strip(), limit)
+    return exit_status(process.returncode), trim_output(text, limit)
+
+
+def run_in_terminal(command, cwd, shell, sink, terminal,
+                    limit=OUTPUT_LIMIT):
     """run_command, with the command on a pseudo-terminal that the user's
     terminal is connected to while it runs"""
     master, slave = pty.openpty()
@@ -197,7 +241,7 @@ def run_in_terminal(command, cwd, shell, sink, terminal):
     previous_winch = signal.signal(
         signal.SIGWINCH, lambda *_: copy_window_size(terminal, master))
     saved = termios.tcgetattr(terminal)
-    chunks = Output()
+    chunks = Output(limit)
     interrupted = False
     try:
         # Raw: every key goes to the command, which has its own terminal
@@ -262,16 +306,17 @@ def plain(text):
 class Output(object):
     """Collects a command's output, bounded: on runaway output it keeps
     the first chunk and a window of the most recent ones"""
-    def __init__(self):
+    def __init__(self, limit=OUTPUT_LIMIT):
+        self.limit = limit
         self.chunks = []
         self.size = 0
 
     def add(self, data):
         self.chunks.append(data)
         self.size += len(data)
-        while self.size > OUTPUT_LIMIT * 8 and len(self.chunks) > 2:
+        while self.size > self.limit * 8 and len(self.chunks) > 2:
             self.size -= len(self.chunks.pop(1))
 
     def text(self):
         output = b''.join(self.chunks).decode('utf-8', 'replace')
-        return trim_output(output.rstrip())
+        return trim_output(output.rstrip(), self.limit)

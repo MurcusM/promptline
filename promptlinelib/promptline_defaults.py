@@ -41,6 +41,18 @@ GLOBAL_DEFAULTS = {
     # How many model replies one @agent request may take. @agent --goal
     # has no limit
     'promptline_agent_max_steps': 25,
+    # The context window, in tokens, that @agent plans for. Older steps are
+    # summarised when a conversation passes most of it. A model that has
+    # less says so, and the agent summarises and tries again
+    'promptline_context_window': 1000000,
+    # Subagents: off | auto (@agent may hand tasks to them) | always (it is
+    # told to, and runs the flow below first, if there is one). Reasoning
+    # 'ultra' always uses subagents and its own flow, whatever this says
+    'promptline_subagents': 'off',
+    # The name of a flow in ~/.config/promptline/flows/NAME.md
+    'promptline_subagent_flow': '',
+    # How many subagents may work at the same time
+    'promptline_subagent_parallel': 4,
     # Minutes a goal run waits for an approval before skipping that command
     # and carrying on with other work. 0 waits for ever
     'promptline_goal_approval_wait': 15,

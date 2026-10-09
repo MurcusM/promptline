@@ -127,6 +127,9 @@ All Promptline code is in `promptlinelib/promptline/`:
 | `personal.py` | The user's files: personalisation, guardrails (`guardrails_ready`), memory (`Memory`), editing (`promptline -P/--guardrails/--memory`, hooked in `optionparse.py`) |
 | `agent/approval.py` | Permission modes: `AskEveryTime`, `AutoReview` + `ModelReviewer` (sees the conversation through `digest`), `FullPermission`; `HARD_STOPS` |
 | `agent/digest.py` | A conversation as short text, for the reviewer and for summarising long runs |
+| `agent/subagents.py` | Subagents (built in, and `~/.config/promptline/agents/*.md`), the `delegate` tool, `SubagentRunner` (parallel runs, `SubUI`, cancel), `PolicyProxy` |
+| `agent/flows.py` | Strict workflows of subagents: the file format, `ULTRA`, `FlowRunner` |
+| `agent/readonly.py` | `check()` and `ReadOnlyPolicy`: the allowlist that lets read-only subagents run unasked |
 | `agent/steering.py` | `LineBuffer`/`Steering`: lines the user types while the agent waits for the model |
 | `prefs.py` | Preferences → Promptline page, built in code |
 
@@ -196,10 +199,29 @@ The controller types that at the next prompt. This needs no D-Bus, so it works w
   way for a goal run to approve a command by itself: an approval nobody answers is
   *skipped*, never allowed. Steering is polled only while `TtyUI.thinking()` runs (the
   terminal is in cbreak then, no echo; the spinner line shows the typed text); during a
-  command the keys belong to the command. Messages that arrive before an unseen
-  (auto/full) command runs make it skip. Tool results carry `approved: by the user` so
+  command the keys belong to the command. Guidance must never derail the agent: only an
+  explicit stop (`steering.is_stop`: starts with `!` or stop/halt/abort/cancel) skips an
+  unseen (auto/full) command or ends subagents and flows (`Steering.interrupted`);
+  other messages are just read before the next step (and passed to later flow stages). Tool results carry `approved: by the user` so
   the reviewer's digest can tell. A run that is interrupted keeps its conversation
   through `repair()`, which drops tool calls that never got results.
+- Subagents: a subagent is an `Agent` with its own messages, a `SubUI`, and only
+  `run_command`. `tools: read` agents get `ReadOnlyPolicy` (allowlist, never ask);
+  others get the user's policy through `PolicyProxy`, and ask through
+  `TtyUI.approve`, which holds `input_lock` (one question at a time; the spinner and
+  steering keep out while `prompting`). Their commands run without a terminal and with a
+  timeout (`run_quiet`). **Never let a subagent skip the policy**, and keep every
+  command in the audit log (`label:how`). Ultra's flow overrides the user's
+  `promptline_subagents`/`_flow`; add new ultra behaviour to `ULTRA`, not to the loop.
+- Reasoning levels: `REASONING_LEVELS` in `providers/__init__.py`; `max` and `ultra`
+  are the same to a provider (`ultra` only changes what `cli.py` does). Claude models
+  that take effort are found by `anthropic.model_traits`. Their thinking blocks ride in
+  `_reasoning` and are stripped (`strip_thinking`) whenever history is cut or
+  summarised, since they are only valid in the conversation that made them.
+- Context window: `promptline_context_window` (default 1M tokens) drives `Agent.compact_at`
+  (70%), message and output limits in `cli.py`, and the terminal context in
+  `prompts.context_text`. A provider's "too big" error (`loop.too_big`) summarises and
+  retries, so a smaller model still works.
 - The reviewer's request used to be only the current line ("continue"); keep giving it
   `history` (set by `AutoReview.attach`).
 - OpenAI: tools combined with `reasoning_effort` are rejected on Chat Completions for

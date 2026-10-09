@@ -225,6 +225,14 @@ Each phase ends with passing `xvfb-run -a pytest` and a manual run of
   registered after the first terminal existed, which VTE refuses, so the
   real app got no shell marks. `terminal.py` now registers them at import,
   and a fresh-process test guards it.
+- **Reasoning max/ultra, subagents, 1M context (2026-10-09).** `max` and
+  `ultra` reasoning levels (Claude `output_config.effort` with thinking blocks
+  carried, `xhigh` for OpenAI-style servers). Subagents (`off`/`auto`/`always`,
+  user-defined in `agents/`), strict workflows in `flows/`, and `ultra`: `max`
+  plus a built-in plan, parallel explore, act, check workflow that overrides the
+  user's subagent settings. Read-only subagents run unasked through an
+  allowlist. Default context window 1M tokens, with summarise-and-retry when a
+  model has less.
 - **Goals, steering, reviewer context (2026-10-09).** `@agent --goal` works
   without a step limit (retries, nudges, stuck detection, summarising when
   the context grows, approval timeout that skips and never approves).

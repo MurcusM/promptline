@@ -71,13 +71,44 @@ GOAL_TEXT = (
 STEERING_TEXT = (
     "The user may send you a message while you are working; it arrives "
     "as 'The user sent this while you were working: ...'. It is their "
-    "latest instruction: take it into account straight away, adjust your "
-    "plan rather than starting over, and keep what you have already done "
-    "in mind.")
+    "latest instruction. Take it into account, and carry on with what you "
+    "were doing: don't stop, start over or drop your plan unless the "
+    "message tells you to. A message that starts with \"stop\" or "
+    "\"!\" does tell you to stop what you were doing.")
+
+
+SUBAGENT_TEXT = {
+    'auto': (
+        "You can hand tasks to subagents with delegate. Use them when a "
+        "job has independent parts that can go on at the same time (put "
+        "several delegate calls in one reply), when looking into something "
+        "would flood your own context with output, or when a second "
+        "opinion would help. Do small things yourself. A subagent knows "
+        "nothing of this conversation, so give it everything it needs. "
+        "Its report comes back as the tool result: check anything that "
+        "matters before you rely on it."),
+    'always': (
+        "Work with subagents on every request, using delegate. Start by "
+        "handing the investigation to explorer subagents, several at once "
+        "when the questions are independent, then act on what they report. "
+        "For changes, you may hand the work to a worker and have a "
+        "reviewer check it. A subagent knows nothing of this conversation, "
+        "so give it everything it needs. Its report comes back as the "
+        "tool result: check anything that matters before you rely on it. "
+        "Answer simple questions that need no looking yourself."),
+}
+
+ULTRA_TEXT = (
+    "This request is running in ultra mode: a team of subagents has "
+    "already planned it, investigated it, done the work and checked it, "
+    "and their record is below. Base your answer on it. Check anything "
+    "that looks doubtful yourself, and carry on or fix what the record "
+    "says is unfinished or failed. Then tell the user, briefly, what was "
+    "found and done.")
 
 
 def system_prompt(shell, mode='ask', personal='', memory='', guardrails=None,
-                  goal=False):
+                  goal=False, subagents=None):
     """The agent's instructions, including what the user has told us about
     themselves (personal), what it remembers (memory), and their rules
     (guardrails, a list of lines). With goal, the agent works on its own
@@ -127,6 +158,8 @@ def system_prompt(shell, mode='ask', personal='', memory='', guardrails=None,
     ]
     if goal:
         parts.append(GOAL_TEXT)
+    if subagents in SUBAGENT_TEXT:
+        parts.append(SUBAGENT_TEXT[subagents])
     text = ' '.join(parts[:3]) + '\n\n' + '\n\n'.join(parts[3:])
     if personal:
         text += ('\n\nAbout the user, in their own words:\n' + personal)
@@ -140,7 +173,15 @@ def system_prompt(shell, mode='ask', personal='', memory='', guardrails=None,
 
 
 def context_text(request):
-    """Describe the terminal for the model"""
+    """Describe the terminal for the model. With a big context window
+    (promptline_context_window, 500k tokens or more) it gets more of the
+    terminal's history: more commands and much more of their output."""
+    window = (request.get('agent') or {}).get('context_window') or 0
+    big = window >= 500000
+    recent_commands = RECENT_COMMANDS * 3 if big else RECENT_COMMANDS
+    full_outputs = FULL_OUTPUTS * 3 if big else FULL_OUTPUTS
+    output_tail = OUTPUT_TAIL * 6 if big else OUTPUT_TAIL
+    short_tail = SHORT_OUTPUT_TAIL * 3 if big else SHORT_OUTPUT_TAIL
     cwd = request.get('cwd')
     lines = ['Shell: %s on %s' % (os.path.basename(request.get('shell') or
                                                    'sh'), platform.system())]
@@ -152,7 +193,7 @@ def context_text(request):
         if contents is not None:
             lines.append('Directory contents: %s' % (contents or '(empty)'))
     records = [r for r in request.get('records', []) if not r.get('private')]
-    records = records[-RECENT_COMMANDS:]
+    records = records[-recent_commands:]
     if records:
         lines.append('')
         lines.append('Recent commands in this terminal, oldest first:')
@@ -165,8 +206,8 @@ def context_text(request):
                 ' [exit %s]' % status if status is not None else ''))
             output = record.get('output') or ''
             if output:
-                full = index >= len(records) - FULL_OUTPUTS
-                tail = OUTPUT_TAIL if full else SHORT_OUTPUT_TAIL
+                full = index >= len(records) - full_outputs
+                tail = output_tail if full else short_tail
                 if len(output) > tail:
                     output = '[...]\n' + output[-tail:]
                 lines.append(redact(output))
@@ -179,6 +220,16 @@ def user_message(request):
     """The message for this invocation: fresh context, then the question"""
     return {'role': 'user', 'content': '%s\n\nRequest: %s' % (
         context_text(request), request.get('query', ''))}
+
+
+def team_message(message, record, ultra=False):
+    """message, with the record of what a team of subagents has done"""
+    from .flows import render
+    intro = ULTRA_TEXT if ultra else (
+        "A team of subagents has already worked on this, in stages. Their "
+        "record is below. Use it, and check anything doubtful yourself.")
+    return dict(message, content='%s\n\n%s\n\n%s' % (
+        message['content'], intro, render(record)))
 
 
 def goal_message(request, goal, resumed=False):

@@ -26,7 +26,10 @@ def config():
                   'promptline_agent_api_key_file',
                   'promptline_autocomplete_api_key_file',
                   'promptline_agent_max_steps',
-                  'promptline_goal_approval_wait'))
+                  'promptline_goal_approval_wait',
+                  'promptline_context_window', 'promptline_subagents',
+                  'promptline_subagent_flow', 'promptline_subagent_parallel',
+                  'promptline_autocomplete_reasoning'))
     yield config
     for key, value in saved.items():
         config[key] = value
@@ -190,3 +193,31 @@ def test_step_limit_and_goal_wait_are_settings(config):
     assert config['promptline_agent_max_steps'] == 60
     page.widgets['goal_approval_wait'].set_value(0)
     assert config['promptline_goal_approval_wait'] == 0
+
+
+def test_reasoning_levels_include_max_and_ultra_for_the_agent(config):
+    page = prefs.PromptlinePage(config)
+    agent = page.widgets['agent_reasoning_combo']
+    prediction = page.widgets['autocomplete_reasoning_combo']
+
+    def levels(combo):
+        model = combo.get_model()
+        return [row[0] for row in model]
+    assert levels(agent)[-2:] == ['max', 'ultra']
+    assert levels(prediction)[-1] == 'max'      # ultra is for @agent
+    agent.get_child().set_text('ultra')
+    assert config['promptline_agent_reasoning'] == 'ultra'
+
+
+def test_subagent_and_context_window_settings(config):
+    page = prefs.PromptlinePage(config)
+    assert config['promptline_subagents'] == 'off'
+    assert config['promptline_context_window'] == 1000000
+    page.widgets['subagents'].set_active_id('always')
+    assert config['promptline_subagents'] == 'always'
+    page.widgets['subagent_flow'].set_text('mine')
+    assert config['promptline_subagent_flow'] == 'mine'
+    page.widgets['subagent_parallel'].set_value(6)
+    assert config['promptline_subagent_parallel'] == 6
+    page.widgets['context_window'].set_value(200000)
+    assert config['promptline_context_window'] == 200000
