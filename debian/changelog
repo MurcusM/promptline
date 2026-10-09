@@ -1,3 +1,25 @@
+promptline (0.3.0) unstable; urgency=medium
+
+  * @agent --goal <what you want>: the agent works on its own until the goal
+    is reached, with no step limit. It checks its work and ends with a
+    summary, or says what it needs from you. Provider hiccups are retried,
+    a command that keeps failing the same way ends the run, and long runs
+    are summarised so they don't run out of context. Ctrl+C keeps the
+    conversation, and a bare @agent --goal resumes it.
+  * In a goal run, a command that needs your approval waits 15 minutes
+    (Preferences > Promptline, 0 waits for ever), then is skipped and the
+    agent carries on with other work. It is never approved for you.
+  * Steering: type while the agent is thinking and press Enter, and it reads
+    your message before its next step. A command about to run unseen is
+    skipped if you steered first.
+  * Fix: the auto-review reviewer only saw the latest line, so "@agent
+    continue" made it ask for approval again and again. It now sees the
+    whole conversation, including what you approved.
+  * The step limit for @agent is a setting (Preferences > Promptline, 25 by
+    default).
+
+ -- Murcus Makhubele <murcus39@gmail.com>  Fri, 09 Oct 2026 03:13:36 +0200
+
 promptline (0.2.3) unstable; urgency=medium
 
   * Fix: OpenCode Zen answered every request with 403 Forbidden, because
