@@ -15,7 +15,15 @@ from . import personal
 from .providers import (PRESETS, connection, key_problem, needs_key,
                         provider_settings, resolve_api_key)
 
-REASONING = ['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh']
+REASONING = ['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+# ultra is for @agent: max, with a team of subagents on a fixed workflow
+AGENT_REASONING = REASONING + ['ultra']
+
+SUBAGENTS = [
+    ('off', _('Off')),
+    ('auto', _('Available: the agent decides when to use them')),
+    ('always', _('Always: the agent works with them on every request')),
+]
 
 MODES = [
     ('ask', _('Ask before every command')),
@@ -68,7 +76,8 @@ class PromptlinePage(object):
         self.provider_chooser('autocomplete')
         self.key_file('autocomplete')
         self.entry('autocomplete_model', _('Model'))
-        self.reasoning('autocomplete_reasoning', _('Reasoning effort'))
+        self.reasoning('autocomplete_reasoning', _('Reasoning effort'),
+                       REASONING)
 
         self.heading(_('Personalisation'))
         self.note(_('Tell Promptline about your work, the tools you prefer '
@@ -83,9 +92,21 @@ class PromptlinePage(object):
         self.provider_chooser('agent')
         self.key_file('agent')
         self.entry('agent_model', _('Model'))
-        self.reasoning('agent_reasoning', _('Reasoning effort'))
+        self.reasoning('agent_reasoning', _('Reasoning effort'),
+                       AGENT_REASONING)
+        self.note(_('max is the most thinking a model gives. ultra is max '
+                    'plus a team of subagents on a fixed workflow (plan, '
+                    'investigate in parallel, act, check); it overrides the '
+                    'subagent settings below. Also: "@agent --max ..." and '
+                    '"@agent --ultra ...".'))
         self.mode_chooser()
         self.spin('agent_max_steps', _('Step limit'), 1, 200)
+        self.spin('context_window', _('Context window (tokens)'), 8000,
+                  10000000, 1000)
+        self.note(_('How much conversation the agent keeps before it '
+                    'summarises the older part. Models with a smaller '
+                    'window are handled: the agent summarises and tries '
+                    'again.'))
         self.note(_('How many model replies one @agent request may take '
                     'before it stops. Say "@agent continue" to carry on. '
                     '"@agent --goal ..." works until its goal is reached '
@@ -95,6 +116,20 @@ class PromptlinePage(object):
         self.note(_('In a goal run, a command that needs your approval is '
                     'skipped if you do not answer in this time, and the '
                     'agent carries on with other work. 0 waits for ever.'))
+
+        self.heading(_('Subagents'))
+        self.choice('subagents', _('Use subagents'), SUBAGENTS)
+        self.note(_('Subagents are helpers with a task of their own: they '
+                    'look into things, or do work, in a conversation of '
+                    'their own and report back, several at once. Ones that '
+                    'only look run without asking; ones that change things '
+                    'follow your permission mode. Add your own in '
+                    '~/.config/promptline/agents/NAME.md.'))
+        self.entry('subagent_flow', _('Workflow'))
+        self.note(_('Optional, with "Always": the name of a workflow in '
+                    '~/.config/promptline/flows/NAME.md, which runs a fixed '
+                    'series of subagents before every answer.'))
+        self.spin('subagent_parallel', _('Subagents at once'), 1, 16)
 
         self.heading(_('Default provider'))
         self.note(_('Used by prediction and @agent unless they choose '
@@ -153,22 +188,34 @@ class PromptlinePage(object):
         self.widgets[key] = entry
         self.attach(entry, text)
 
-    def spin(self, key, text, low, high):
-        button = Gtk.SpinButton.new_with_range(low, high, 1)
+    def choice(self, key, text, options):
+        combo = Gtk.ComboBoxText()
+        for value, label in options:
+            combo.append(value, label)
+        current = self.config['promptline_' + key]
+        combo.set_active_id(current if current in dict(options)
+                            else options[0][0])
+        combo.connect('changed', lambda c: self.set(key, c.get_active_id()))
+        self.widgets[key] = combo
+        self.attach(combo, text)
+
+    def spin(self, key, text, low, high, step=1):
+        button = Gtk.SpinButton.new_with_range(low, high, step)
         button.set_value(int(self.config['promptline_' + key]))
         button.connect('value-changed',
                        lambda b: self.set(key, b.get_value_as_int()))
         self.widgets[key] = button
         self.attach(button, text)
 
-    def reasoning(self, key, text):
+    def reasoning(self, key, text, levels=REASONING):
         combo = Gtk.ComboBoxText.new_with_entry()
-        for effort in REASONING:
+        for effort in levels:
             combo.append_text(effort)
         combo.get_child().set_text(self.config['promptline_' + key])
         combo.connect('changed', lambda c: self.set(
             key, (c.get_active_text() or '').strip()))
         self.widgets[key] = combo.get_child()
+        self.widgets[key + '_combo'] = combo
         self.attach(combo, text)
 
     def provider_chooser(self, purpose=None):

@@ -317,6 +317,10 @@ class Controller(object):
                 'mode': Config()['promptline_agent_mode'],
                 'review_reasoning': Config()['promptline_review_reasoning'],
                 'max_steps': setting('promptline_agent_max_steps'),
+                'context_window': setting('promptline_context_window'),
+                'subagents': setting('promptline_subagents'),
+                'subagent_flow': setting('promptline_subagent_flow'),
+                'subagent_parallel': setting('promptline_subagent_parallel'),
                 'approval_wait': setting('promptline_goal_approval_wait'),
             },
         }

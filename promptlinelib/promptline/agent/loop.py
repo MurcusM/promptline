@@ -103,11 +103,13 @@ place_on_prompt remembers the command for the user's prompt:
 """
 
 import json
+import re
 import time
 
 from ..providers import ProviderError
 from .approval import ALLOW, DENY, AskEveryTime
 from .digest import STEERING_PREFIX, digest
+from .steering import is_stop
 from .tools import GOAL_TOOLS, TOOLS
 
 MAX_STEPS = 25
@@ -121,10 +123,18 @@ RETRY_WAITS = (5, 15, 30, 60, 120, 120)
 # end a goal run
 STUCK_WARNING = 3
 STUCK_GIVE_UP = 6
-# When the conversation grows past this many characters, older steps are
-# summarised, keeping the first request and the latest KEEP_RECENT messages
-COMPACT_CHARS = 300000
+# The context window to plan for, in tokens (promptline_context_window). When
+# the conversation grows past COMPACT_AT of it, older steps are summarised,
+# keeping the first request and the latest KEEP_RECENT messages. A token is
+# taken to be 4 characters.
+CONTEXT_TOKENS = 1000000
+CHARS_PER_TOKEN = 4
+COMPACT_AT = 0.7
 KEEP_RECENT = 24
+# A request the provider turned down because it was too big, as its error
+# says it (the status is 400 or 413, or 422)
+TOO_BIG = re.compile(r'context|too long|too large|too many tokens|token limit|'
+                     r'maximum .*(?:length|tokens)|exceeds?', re.IGNORECASE)
 
 NUDGE = (
     "The goal has not been marked complete. If it is reached, and you have "
@@ -140,12 +150,13 @@ SUMMARY_PROMPT = (
     "approved, and what remains. Keep specifics such as paths, names and "
     "numbers. No preamble.")
 
-DONE = ('complete', 'blocked', 'stuck', 'stalled')
+DONE = ('complete', 'blocked', 'stuck', 'stalled', 'cancelled')
 
 
 class Agent(object):
     def __init__(self, provider, ui, executor, policy=None, messages=None,
-                 max_steps=MAX_STEPS, memory=None, audit=None, steering=None):
+                 max_steps=MAX_STEPS, memory=None, audit=None, steering=None,
+                 context_tokens=CONTEXT_TOKENS, tools=None, subagents=None):
         self.provider = provider
         self.ui = ui
         self.executor = executor
@@ -155,6 +166,10 @@ class Agent(object):
         self.messages = list(messages or [])
         self.max_steps = max_steps
         self.steering = steering    # take() -> messages typed meanwhile
+        self.compact_at = int(context_tokens * CHARS_PER_TOKEN * COMPACT_AT)
+        self.tools = list(tools or TOOLS)   # what the model may call
+        self.subagents = subagents  # a SubagentRunner, for delegate
+        self.stop_requested = None  # () -> True to end the run early
         self.prefill = None
         self.goal = None            # the goal being worked towards, if any
         self.outcome = None         # how a goal run ended: see DONE
@@ -172,10 +187,14 @@ class Agent(object):
         passing provider errors are retried."""
         self.goal = goal
         self.outcome, self.summary = None, ''
-        tools = TOOLS + GOAL_TOOLS if goal else TOOLS
+        tools = self.tools + GOAL_TOOLS if goal else self.tools
         self.messages.append(user_message)
         nudges, step = 0, 0
         while goal or step < self.max_steps:
+            if self.stop_requested and self.stop_requested():
+                self.outcome = 'cancelled'
+                self.summary = 'Stopped early.'
+                return
             step += 1
             self.inject_steering()
             self.compact()
@@ -195,10 +214,10 @@ class Agent(object):
                 self.messages.append({'role': 'user', 'content': NUDGE})
                 continue
             nudges = 0
-            for call in calls:
+            for call, result in zip(calls, self.run_calls(calls)):
                 self.messages.append({'role': 'tool',
                                       'tool_call_id': call.get('id'),
-                                      'content': self.handle(call)})
+                                      'content': result})
             if self.outcome in DONE:
                 return
             if goal and step % 25 == 0:
@@ -214,7 +233,8 @@ class Agent(object):
         def on_text(piece):
             streamed.append(piece)
             self.ui.stream(piece)
-        for attempt in range(len(RETRY_WAITS) + 1 if self.goal else 1):
+        attempt, shrinks = 0, 0
+        while True:
             try:
                 reply = self.ui.thinking(
                     lambda: self.provider.chat(self.messages, tools,
@@ -224,9 +244,19 @@ class Agent(object):
                 if streamed:
                     self.ui.end_stream()
                     streamed[:] = []
-                if ex.auth or attempt >= len(RETRY_WAITS) or not self.goal:
+                if ex.auth:
+                    raise
+                if too_big(ex) and shrinks < 3 and self.shrink(shrinks):
+                    # The model's window is smaller than we planned for
+                    shrinks += 1
+                    self.ui.note('That was too much for this model. '
+                                 'Summarising the older part of the '
+                                 'conversation and trying again.')
+                    continue
+                if attempt >= len(RETRY_WAITS) or not self.goal:
                     raise
                 wait = RETRY_WAITS[attempt]
+                attempt += 1
                 self.ui.note('%s. Trying again in %d seconds.' % (ex, wait))
                 self.sleep(wait)
         self.messages.append(reply)
@@ -244,22 +274,38 @@ class Agent(object):
             return False
         for text in texts:
             self.ui.note('You: %s' % text)
-        self.messages.append({'role': 'user', 'content':
-                              STEERING_PREFIX + ' / '.join(texts)})
+        content = STEERING_PREFIX + ' / '.join(texts)
+        if any(is_stop(text) for text in texts):
+            content += ('\n(The user told you to stop what you were doing. '
+                        'Do, and then do what they say.)')
+        self.messages.append({'role': 'user', 'content': content})
         return True
 
-    def compact(self):
+    def shrink(self, level=0):
+        """The model turned the conversation down as too big: plan for half
+        of it from now on, and summarise to that, keeping less of the recent
+        part each time (level). False if that leaves nothing smaller."""
+        before = size(self.messages)
+        self.compact_at = max(8000, before // 2)
+        self.compact(force=True, level=level)
+        return size(self.messages) < before
+
+    def compact(self, force=False, level=0):
         """Summarise the older part of a conversation that has grown too
         big, so a long run can go on"""
-        if size(self.messages) < COMPACT_CHARS:
+        if not force and size(self.messages) < self.compact_at:
             return
         anchor = 2 if len(self.messages) > 1 and \
             self.messages[1].get('role') == 'user' else 1
-        cut = len(self.messages) - KEEP_RECENT
+        keep = max(2, KEEP_RECENT >> (level + 1)) if force else KEEP_RECENT
+        clip = max(500, 4000 >> level)
+        cut = len(self.messages) - keep
         while cut < len(self.messages) and \
                 self.messages[cut].get('role') == 'tool':
             cut += 1
         if cut <= anchor:
+            if force:
+                self.messages = clip_results(self.messages, clip)
             return
         older = self.messages[anchor:cut]
         notes = digest(older, budget=30000)
@@ -272,9 +318,59 @@ class Agent(object):
                     max_tokens=1500, timeout=90), label='summarising')
             except ProviderError:
                 pass    # the digest itself will do
-        self.messages = self.messages[:anchor] + [{
+        kept = self.messages[cut:]
+        if force:
+            kept = clip_results(kept, clip)
+        # Editing the past makes a model's thinking blocks from before it
+        # invalid, so they are not sent again
+        self.messages = strip_thinking(self.messages[:anchor] + [{
             'role': 'user', 'content': '[Your work so far, summarised to '
-            'save space]\n' + notes}] + self.messages[cut:]
+            'save space]\n' + notes}] + kept)
+
+    def run_calls(self, calls):
+        """The results of a reply's tool calls, in order. Neighbouring
+        delegate calls (subagents) run at the same time."""
+        results, index = [], 0
+        while index < len(calls):
+            batch = []
+            while index + len(batch) < len(calls) and \
+                    self.delegation(calls[index + len(batch)]) is not None:
+                batch.append(self.delegation(calls[index + len(batch)]))
+            if batch:
+                results.extend(self.delegate(batch))
+                index += len(batch)
+            else:
+                results.append(self.handle(calls[index]))
+                index += 1
+        return results
+
+    def delegation(self, call):
+        """(subagent, task) if call hands a task to a subagent, else None"""
+        function = call.get('function') or {}
+        if function.get('name') != 'delegate':
+            return None
+        try:
+            args = json.loads(function.get('arguments') or '{}')
+        except ValueError:
+            args = {}
+        return str(args.get('agent') or ''), str(args.get('task') or '')
+
+    def delegate(self, jobs):
+        """Reports from subagents given (name, task) jobs, run together"""
+        if self.subagents is None:
+            return ['Error: subagents are not available.'] * len(jobs)
+        jobs = [(name, task, None) for name, task in jobs]
+        if any(not task.strip() for _name, task, _label in jobs):
+            return ['Error: a delegate call needs a task.'] * len(jobs)
+        try:
+            reports = self.ui.thinking(
+                lambda: self.subagents.run_many(jobs),
+                label='subagents working')
+        except BaseException:
+            self.subagents.cancel()
+            raise
+        return ['[%s]\n%s' % (name, report)
+                for (name, _task, _label), report in zip(jobs, reports)]
 
     def handle(self, call):
         """Carry out one tool call; returns the text sent back to the model"""
@@ -311,16 +407,17 @@ class Agent(object):
         else:
             decision = self.policy.decide(command, reason)
         if decision.action == DENY:
-            return 'This command is not allowed.'
+            return 'This command is not allowed%s.' % (
+                ': ' + decision.note if decision.note else '')
         proposed = command
         if decision.action == ALLOW:
-            if self.steering is not None and self.steering.pending():
-                # Guidance typed while this was being decided may well
-                # change it; nothing should run unseen before it is read
-                self.ui.note('Not run, because you sent guidance first: %s'
-                             % command)
-                return ('Not run: the user sent you new guidance before this '
-                        'command ran. Read it, then decide again.')
+            if self.steering is not None and self.steering.interrupted():
+                # The user said stop: nothing runs unseen before they have
+                # been heard. (Ordinary guidance doesn't interrupt.)
+                self.ui.note('Not run, because you said stop: %s' % command)
+                return ('Not run: the user told you to stop before this '
+                        'command ran. Read their message, then decide '
+                        'again.')
             if not shown:
                 self.ui.auto_approved(command, self.policy.mode,
                                       decision.note)
@@ -406,6 +503,36 @@ class Agent(object):
         for fact in gone:
             self.ui.note('Forgot: %s' % fact)
         return 'Forgot %d fact(s).' % len(gone)
+
+
+def too_big(error):
+    """Whether the provider refused the request for being too large"""
+    return getattr(error, 'status', None) in (400, 413, 422) and \
+        bool(TOO_BIG.search(str(error)))
+
+
+def clip_results(messages, limit=4000):
+    """messages with long command output cut down"""
+    return [dict(m, content=m['content'][:limit] + ' [... cut ...]')
+            if m.get('role') == 'tool' and len(m.get('content') or '') > limit
+            else m for m in messages]
+
+
+def strip_thinking(messages):
+    """messages without Claude's thinking blocks, which are only good in the
+    conversation that produced them (other reasoning is left alone)"""
+    stripped = []
+    for message in messages:
+        kept = [item for item in message.get('_reasoning') or []
+                if item.get('type') not in ('thinking', 'redacted_thinking')]
+        if len(kept) != len(message.get('_reasoning') or []):
+            message = dict(message)
+            if kept:
+                message['_reasoning'] = kept
+            else:
+                del message['_reasoning']
+        stripped.append(message)
+    return stripped
 
 
 def size(messages):

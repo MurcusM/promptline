@@ -73,10 +73,51 @@ USER_AGENT = 'promptline/%s' % APP_VERSION
 
 class ProviderError(Exception):
     """A request failed. auth is True when retrying won't help until the
-    user fixes their key or settings."""
-    def __init__(self, message, auth=False):
+    user fixes their key or settings. status is the HTTP status, if any."""
+    def __init__(self, message, auth=False, status=None):
         Exception.__init__(self, message)
         self.auth = auth
+        self.status = status
+
+
+# Reasoning levels, lowest first. 'max' asks for the most thinking a model
+# gives; 'ultra' is 'max' plus a team of subagents (see agent/flows.py), so
+# to a provider the two are the same.
+REASONING_LEVELS = ('none', 'minimal', 'low', 'medium', 'high', 'xhigh',
+                    'max', 'ultra')
+
+# Reasoning tokens count against the output limit, so each level needs room
+# to think on top of the visible reply, and time to do it in:
+# (extra tokens, minimum timeout in seconds)
+REASONING_BUDGET = {
+    'minimal': (512, 30),
+    'low': (2048, 30),
+    'medium': (4096, 60),
+    'high': (8192, 90),
+    'xhigh': (16384, 120),
+    'max': (32768, 240),
+    'ultra': (32768, 240),
+}
+
+# Context windows (tokens) of models known to be smaller than the default
+SMALL_WINDOWS = (('claude-haiku-4-5', 200000),)
+
+
+def context_window(setting, model=''):
+    """The context window to plan for: the setting, unless the model is
+    known to have less
+
+    >>> context_window(1000000, 'claude-sonnet-5-5')
+    1000000
+    >>> context_window(1000000, 'claude-haiku-4-5-20251001')
+    200000
+    >>> context_window(128000, 'claude-haiku-4-5')
+    128000
+    """
+    for prefix, window in SMALL_WINDOWS:
+        if (model or '').startswith(prefix):
+            return min(setting, window)
+    return setting
 
 
 Preset = collections.namedtuple(

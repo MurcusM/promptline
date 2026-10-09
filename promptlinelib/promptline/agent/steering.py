@@ -8,6 +8,18 @@ keyboard. While it waits for the model, Steering reads what the user types
 for the agent to take before its next step. Keys typed while one of the
 agent's commands runs belong to that command, as before.
 
+A message is guidance by default: it is read before the agent's next step
+and the agent carries on with what it was doing, taking it into account.
+Only an explicit stop (is_stop) interrupts: commands waiting to run unseen
+are skipped, and subagents end at their next step.
+
+>>> is_stop('stop, use clang instead'), is_stop('!use clang'), is_stop('Halt.')
+(True, True, True)
+>>> is_stop('use clang instead'), is_stop('please stop'), is_stop('')
+(False, False, False)
+>>> is_stop('stopping point: line 40'), is_stop('stop')
+(False, True)
+
 LineBuffer is the line editor, kept apart from the terminal so it can be
 tested:
 
@@ -32,9 +44,20 @@ tested:
 
 import codecs
 import os
+import re
 import select
 import termios
 import tty
+
+STOP_WORDS = ('stop', 'halt', 'abort', 'cancel')
+
+
+def is_stop(text):
+    """Whether a message explicitly asks the agent to stop what it is
+    doing: it starts with '!' or with the word stop, halt, abort or cancel"""
+    text = text.strip().lower()
+    return text.startswith('!') or \
+        re.match(r'(?:%s)\b' % '|'.join(STOP_WORDS), text) is not None
 
 
 class LineBuffer(object):
@@ -107,7 +130,16 @@ class Steering(object):
         return self.buffer.text
 
     def pending(self):
+        """Whether there is anything to read"""
         return bool(self.queue)
+
+    def interrupted(self):
+        """Whether any of it explicitly says to stop"""
+        return any(is_stop(text) for text in self.queue)
+
+    def peek(self):
+        """What has been sent so far, without taking it"""
+        return list(self.queue)
 
     def take(self):
         """The messages sent since last time"""

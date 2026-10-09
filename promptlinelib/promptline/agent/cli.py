@@ -39,12 +39,15 @@ An unfinished goal is remembered, so a bare "@agent --goal" can resume it:
 >>> store.save([{'role': 'user', 'content': 'hi'}])
 >>> store.load_goal() is None
 True
->>> parse_goal('--goal fix the build')
-(True, 'fix the build')
->>> parse_goal('--goal')
-(True, '')
->>> parse_goal('why --goal?')
-(False, 'why --goal?')
+>>> flags, rest = parse_options('--ultra --goal fix the build')
+>>> sorted(flags), rest
+(['goal', 'ultra'], 'fix the build')
+>>> parse_options('--goal')
+({'goal'}, '')
+>>> parse_options('why --goal?')
+(set(), 'why --goal?')
+>>> parse_options('--max what is using port 80?')
+({'max'}, 'what is using port 80?')
 """
 
 import hashlib
@@ -60,12 +63,15 @@ from . import read_request, runtime_dir, write_prefill
 from .. import personal
 from .approval import ALLOW, AskEveryTime, AutoReview, FullPermission, \
     ModelReviewer, ReviewStream
-from .loop import MAX_STEPS, Agent
-from .prompts import goal_message, system_prompt, user_message
+from .flows import ULTRA, FlowRunner, load_flow, problems
+from .loop import CONTEXT_TOKENS, MAX_STEPS, Agent, strip_thinking
+from .prompts import (context_text, goal_message, system_prompt, team_message,
+                      user_message)
 from .steering import Steering
-from .tools import run_command
-from ..providers import (ProviderError, make_provider, missing_key_hint,
-                         provider_settings)
+from .subagents import SubagentRunner, delegate_tool, load_agents
+from .tools import OUTPUT_LIMIT, TOOLS, run_command
+from ..providers import (ProviderError, context_window, make_provider,
+                         missing_key_hint, provider_settings)
 
 CONVERSATION_TTL = 30 * 60
 MAX_MESSAGES = 60
@@ -108,12 +114,29 @@ def repair(messages):
     return messages
 
 
-def parse_goal(query):
-    """(whether the query starts with --goal, the rest of it)"""
-    word, _space, rest = query.strip().partition(' ')
-    if word == '--goal':
-        return True, rest.strip()
-    return False, query
+def max_messages(window):
+    """How many messages of a conversation to keep for the next question
+
+    >>> max_messages(1000000), max_messages(128000), max_messages(8000)
+    (400, 60, 60)
+    """
+    return max(MAX_MESSAGES, window // 2500)
+
+
+FLAGS = ('--goal', '--ultra', '--max')
+
+
+def parse_options(query):
+    """(the flags a query starts with, the rest of it). --goal works until
+    the goal is reached, --max reasons as hard as it can, --ultra is --max
+    with a team of subagents on a fixed workflow."""
+    flags, rest = set(), query.strip()
+    while True:
+        word, _space, after = rest.partition(' ')
+        if word not in FLAGS:
+            return flags, rest
+        flags.add(word[2:])
+        rest = after.strip()
 
 
 class ConversationStore(object):
@@ -141,15 +164,20 @@ class ConversationStore(object):
         """The goal of an unfinished goal run, if there is one"""
         return self.read().get('goal') or None
 
-    def save(self, messages, goal=None):
+    def save(self, messages, goal=None, window=CONTEXT_TOKENS):
         """Keep the conversation; goal is set while a goal run is
-        unfinished, so that it can be resumed"""
+        unfinished, so that it can be resumed. A bigger context window
+        keeps more of it."""
         stored = []
-        for message in trim_history(messages):
+        tool_limit = max(STORED_TOOL_OUTPUT, window // 50)
+        # Claude's thinking is only good in the conversation that produced
+        # it, and this one is about to be cut down
+        for message in trim_history(strip_thinking(messages),
+                                    max_messages(window)):
             if message.get('role') == 'tool' and \
-                    len(message.get('content') or '') > STORED_TOOL_OUTPUT:
+                    len(message.get('content') or '') > tool_limit:
                 message = dict(message, content=message['content'][
-                    :STORED_TOOL_OUTPUT] + ' [...]')
+                    :tool_limit] + ' [...]')
             stored.append(message)
         os.makedirs(os.path.dirname(self.path), mode=0o700, exist_ok=True)
         fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -172,6 +200,10 @@ class TtyUI(object):
         self.last_char = '\n'
         self.steering = None            # reads what the user types meanwhile
         self.approval_timeout = None    # seconds to wait for an answer
+        # Subagents run on other threads and may need an answer: one
+        # question at a time, and the spinner and steering keep out of it
+        self.input_lock = threading.RLock()
+        self.prompting = False
 
     def write(self, text):
         self.out.write(text)
@@ -205,6 +237,10 @@ class TtyUI(object):
         shown = None
         try:
             while thread.is_alive():
+                if self.prompting:
+                    time.sleep(0.05)    # a question is on screen
+                    shown = None
+                    continue
                 # Redraw when the spinner turns or the typed text changes
                 now = (int(time.monotonic() / 0.12), self.status(label))
                 if now != shown:
@@ -214,10 +250,17 @@ class TtyUI(object):
                             self.write('\r\033[K%s%s %s%s' % (
                                 DIM, self.SPINNER[now[0] % len(self.SPINNER)],
                                 now[1], RESET))
-                if steering is not None:
-                    steering.poll(0.04)
-                else:
+                if steering is None:
                     thread.join(0.12)
+                elif self.input_lock.acquire(False):
+                    # Reading keys is exclusive with asking a question:
+                    # a poll that is under way must not take the answer
+                    try:
+                        steering.poll(0.04)
+                    finally:
+                        self.input_lock.release()
+                else:
+                    time.sleep(0.02)
         finally:
             if steering is not None:
                 steering.stop()
@@ -242,7 +285,16 @@ class TtyUI(object):
         if typed:
             room = max(10, columns - len(text) - 6)
             return text + '> ' + typed[-room:]
-        return text + ('Type to steer, Enter to send' if not queued else '')
+        return text + ('Type to steer, Enter to send; start with "stop" to '
+                       'halt it' if not queued else '')
+
+    def emit(self, text):
+        """A line of progress from elsewhere (a subagent), kept clear of
+        the spinner"""
+        with self.lock:
+            if self.tty and not self.streaming:
+                self.out.write('\r\033[K')
+            self.write(DIM + text + RESET + '\n')
 
     def say(self, text):
         self.write(text + '\n\n')
@@ -323,10 +375,26 @@ class TtyUI(object):
             else:
                 self.write(WARN + decision.note + RESET + '\n')
 
-    def approve(self, command, reason, note=None, shown=False):
+    def approve(self, command, reason, note=None, shown=False, who=None):
+        """Ask whether to run command. who names the subagent that wants
+        to, when one does."""
+        with self.input_lock:
+            self.prompting = True
+            try:
+                if self.tty:
+                    with self.lock:
+                        self.out.write('\r\033[K')   # the spinner's line
+                return self.ask(command, reason, note, shown, who)
+            finally:
+                self.prompting = False
+
+    def ask(self, command, reason, note, shown, who):
         if not shown:
             if reason:
-                self.write(DIM + reason + RESET + '\n')
+                self.write(DIM + (('[%s] ' % who) if who else '') + reason +
+                           RESET + '\n')
+            elif who:
+                self.write(DIM + '[%s]' % who + RESET + '\n')
             if note:
                 self.write(WARN + note + RESET + '\n')
             self.write('  ' + BOLD + '$ ' + command + RESET + '\n')
@@ -505,7 +573,8 @@ def main(argv=None):
                 '@agent --goal <what you want>')
         return 0
     store = ConversationStore(request.get('terminal'))
-    is_goal, text = parse_goal(query)
+    flags, text = parse_options(query)
+    is_goal = 'goal' in flags
     resumed = False
     if is_goal and not text:
         text = store.load_goal()
@@ -515,12 +584,22 @@ def main(argv=None):
                     'until the goal is reached, and you can type to steer '
                     'it meanwhile.')
             return 0
+    if not text:
+        ui.note('Usage: @agent [--goal] [--max | --ultra] <what you want>')
+        return 0
     goal = text if is_goal else None
 
-    provider = make_provider('agent', request.get('settings'))
+    settings = dict(request.get('settings') or provider_settings('agent'))
+    reasoning = settings.get('reasoning') or ''
+    if 'max' in flags:
+        reasoning = 'max'
+    if 'ultra' in flags:
+        reasoning = 'ultra'
+    settings['reasoning'] = reasoning
+    ultra = reasoning == 'ultra'
+    provider = make_provider('agent', settings)
     if provider is None:
-        ui.error(missing_key_hint(request.get('settings') or
-                                  provider_settings('agent')))
+        ui.error(missing_key_hint(settings))
         return 1
 
     cwd = request.get('cwd') or os.getcwd()
@@ -528,20 +607,24 @@ def main(argv=None):
     out = sys.stdout.buffer
     terminal = sys.stdin.fileno() if sys.stdin.isatty() else None
 
+    options = request.get('agent') or {}
+    window = context_window(int(options.get('context_window') or
+                                CONTEXT_TOKENS), settings.get('model'))
+    output_limit = max(OUTPUT_LIMIT, window * 4 // 50)
+
     def executor(command):
         sys.stdout.flush()
-        return run_command(command, cwd, shell, out, terminal)
+        return run_command(command, cwd, shell, out, terminal, output_limit)
 
     memory = personal.Memory()
     about = personal.personal_text()
     if not about and not memory.facts():
         first_time_tip(ui)
 
-    options = request.get('agent') or {}
     guardrails = personal.guardrail_rules()
     policy, mode = choose_policy(
-        ui, options, request.get('settings'),
-        'Goal: ' + text if goal else text, cwd, guardrails)
+        ui, options, settings, 'Goal: ' + text if goal else text, cwd,
+        guardrails)
     ui.mode_banner(mode)
 
     if ui.tty:
@@ -553,25 +636,75 @@ def main(argv=None):
                 'press Enter to steer it; Ctrl+C stops.' % (
                     '' if mode != 'ask' else ', asking before each '
                     'command'))
+    audit = AuditLog(cwd, mode)
+
+    # Subagents: on request, always for ultra (which also brings its own
+    # fixed workflow, in place of any the user has configured)
+    team = 'always' if ultra else options.get('subagents')
+    if team not in ('auto', 'always'):
+        team = None
+    tools, runner, flow = list(TOOLS), None, None
+    if team:
+        agents = load_agents()
+        tools.append(delegate_tool(agents))
+        providers = {}
+
+        def provider_for(level):
+            if not level or level == reasoning:
+                return provider
+            if level not in providers:
+                providers[level] = make_provider(
+                    'agent', dict(settings, reasoning=level)) or provider
+            return providers[level]
+        runner = SubagentRunner(
+            provider_for, ui, policy, agents, cwd, audit, shell,
+            max_parallel=int(options.get('subagent_parallel') or 4),
+            cancelled=ui.steering.interrupted if ui.steering else None,
+            guidance=ui.steering.peek if ui.steering else None,
+            context_tokens=window, output_limit=output_limit)
+        if ultra:
+            flow = ULTRA
+        elif team == 'always' and options.get('subagent_flow'):
+            try:
+                flow = load_flow(options['subagent_flow'])
+            except ValueError as ex:
+                ui.error('subagent flow: %s' % ex)
+                return 1
+        if flow and problems(flow, agents):
+            ui.error('flow %s: %s' % (flow.name,
+                                      '; '.join(problems(flow, agents))))
+            return 1
+        if ultra:
+            ui.note('Ultra: maximum reasoning, and a team of subagents on '
+                    'a fixed workflow: %s.' % ', then '.join(
+                        s.name for s in flow.stages))
     history = store.load()
     prompt = system_prompt(shell, mode=mode, personal=about,
                            memory=memory.text(), guardrails=guardrails,
-                           goal=bool(goal))
+                           goal=bool(goal), subagents=team)
     agent = Agent(provider, ui, executor, policy=policy, memory=memory,
-                  audit=AuditLog(cwd, mode),
-                  max_steps=max_steps(options.get('max_steps')),
+                  audit=audit, max_steps=max_steps(options.get('max_steps')),
+                  context_tokens=window, tools=tools, subagents=runner,
                   steering=ui.steering, messages=[
                       {'role': 'system', 'content': prompt}] + history)
 
     def save():
         """Keep the conversation (and an unfinished goal, to resume)"""
         unfinished = goal if goal and agent.outcome != 'complete' else None
-        store.save(repair(agent.messages)[1:], goal=unfinished)
+        store.save(repair(agent.messages)[1:], goal=unfinished,
+                   window=window)
 
     try:
-        agent.run(goal_message(request, goal, resumed) if goal
-                  else user_message(request), goal=goal)
+        message = goal_message(request, goal, resumed) if goal \
+            else user_message(request)
+        if flow:
+            record = FlowRunner(runner, ui).run(flow, text,
+                                                context_text(request))
+            message = team_message(message, record, ultra)
+        agent.run(message, goal=goal)
     except KeyboardInterrupt:
+        if runner:
+            runner.cancel()
         ui.write('\n')
         ui.note('Interrupted.%s' % (
             ' Say "@agent --goal" to resume the goal.' if goal else ''))

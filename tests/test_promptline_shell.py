@@ -875,3 +875,228 @@ def test_agent_goal_survives_ctrl_c_and_resumes(home, history, agent_setup,
                for m in resumed)
     # The command that was never answered isn't left hanging in the history
     assert not any(m.get('tool_calls') for m in resumed)
+
+
+def team(server, main=None):
+    """Make the fake server answer as a team of subagents and the agent,
+    by what each is told it is. main(messages) is the agent's reply."""
+    import json
+
+    def do_POST(handler):
+        length = int(handler.headers['Content-Length'])
+        body = json.loads(handler.rfile.read(length))
+        server.requests.append(body)
+        messages = body['messages']
+        system, step = messages[0]['content'], len(messages)
+        message = {'role': 'assistant', 'content': None}
+        if 'You make plans' in system:
+            message['content'] = ('- Is the service up?\nApproach: just '
+                                  'look.')
+        elif 'You investigate one question' in system:
+            if step == 2:
+                message['tool_calls'] = [tool_call(
+                    'run_command', command='echo explored', reason='look')]
+            else:
+                message['content'] = 'It is up.'
+        elif 'You carry out the task' in system:
+            if step == 2:
+                message['tool_calls'] = [tool_call(
+                    'run_command', command='echo changed', reason='apply')]
+            else:
+                message['content'] = 'Changed it.'
+        elif 'You are a critical reviewer' in system:
+            message['content'] = 'PASS: matches the request'
+        elif 'You check independently' in system:
+            message['content'] = 'PASS: it works'
+        else:
+            message.update((main or (lambda m: {'content': 'All done.'}))(
+                messages))
+        data = json.dumps({'choices': [{'message': message}]}).encode()
+        handler.send_response(200)
+        handler.send_header('Content-Type', 'application/json')
+        handler.send_header('Content-Length', str(len(data)))
+        handler.end_headers()
+        handler.wfile.write(data)
+    server.httpd.RequestHandlerClass.do_POST = do_POST
+
+
+def roles(server):
+    markers = (('You make plans', 'planner'),
+               ('You investigate one question', 'explorer'),
+               ('You carry out the task', 'worker'),
+               ('You are a critical reviewer', 'reviewer'),
+               ('You check independently', 'verifier'))
+    found = []
+    for request in server.requests:
+        system = request['messages'][0]['content']
+        found.append(next((role for marker, role in markers
+                           if marker in system), 'agent'))
+    return found
+
+
+def test_agent_ultra_runs_a_team_on_a_fixed_workflow(home, history,
+                                                     agent_setup,
+                                                     monkeypatch):
+    monkeypatch.setattr(controller_module, 'Config', lambda: {
+        'promptline_agent_mode': 'ask',
+        'promptline_review_reasoning': 'low',
+        'promptline_subagents': 'off'})       # ultra ignores this
+    team(agent_setup)
+    terminal, session, controller = start_shell(
+        shutil.which('bash'), str(home), {}, with_controller=True)
+    run_agent(terminal, session, controller, '--ultra check the service')
+    # The worker changes things, so the user is asked, and told who asks
+    assert wait_for(lambda: '[a]pprove' in screen_text(terminal),
+                    timeout=60), screen_text(terminal)
+    assert '[worker]' in screen_text(terminal)
+    terminal.vte.feed_child(b'a')
+    assert agent_done(terminal, session), screen_text(terminal)
+
+    screen = screen_text(terminal)
+    assert 'Ultra: maximum reasoning' in screen
+    for stage in ('plan', 'explore', 'act', 'check'):
+        assert 'Stage %d of 4: %s' % (
+            ['plan', 'explore', 'act', 'check'].index(stage) + 1,
+            stage) in screen
+    assert '[explorer 1/1] done (1 command)' in screen
+    # Every request asked for the most reasoning, and the agent's own came
+    # last, with the team's record
+    assert all(r.get('reasoning_effort') == 'xhigh'
+               for r in agent_setup.requests)
+    assert sorted(set(roles(agent_setup))) == [
+        'agent', 'explorer', 'planner', 'reviewer', 'verifier', 'worker']
+    assert roles(agent_setup)[-1] == 'agent'
+    final = agent_setup.requests[-1]['messages'][-1]['content']
+    assert 'ultra mode' in final and '## plan' in final
+    assert '### Is the service up?\nIt is up.' in final and '## act' in final
+    # Their commands are in the audit log, with who ran them and how
+    hows = dict((line[5], line[2]) for line in audit_lines(home))
+    assert hows == {'echo explored': 'explorer 1/1:read-only',
+                    'echo changed': 'worker:approved'}
+
+
+def test_agent_subagents_can_be_switched_on_without_ultra(home, history,
+                                                          agent_setup,
+                                                          monkeypatch):
+    import json
+    monkeypatch.setattr(controller_module, 'Config', lambda: {
+        'promptline_agent_mode': 'ask',
+        'promptline_review_reasoning': 'low',
+        'promptline_subagents': 'auto',
+        'promptline_subagent_parallel': 2})
+
+    def main(messages):
+        if messages[-1]['role'] == 'user':
+            return {'tool_calls': [{'id': 'd1', 'type': 'function',
+                                    'function': {'name': 'delegate',
+                                                 'arguments': json.dumps({
+                                                     'agent': 'explorer',
+                                                     'task': 'is it up?'})}}]}
+        return {'content': 'All done. ' + messages[-1]['content']}
+    team(agent_setup, main)
+    terminal, session, controller = start_shell(
+        shutil.which('bash'), str(home), {}, with_controller=True)
+    run_agent(terminal, session, controller, 'is the service up?')
+    assert agent_done(terminal, session), screen_text(terminal)
+
+    first = agent_setup.requests[0]
+    assert 'delegate' in [t['function']['name'] for t in first['tools']]
+    assert 'hand tasks to subagents' in first['messages'][0]['content']
+    assert roles(agent_setup) == ['agent', 'explorer', 'explorer', 'agent']
+    assert 'reasoning_effort' not in first       # no reasoning level set
+    assert '[explorer] done (1 command)' in screen_text(terminal)
+    assert 'It is up.' in screen_text(terminal)
+    assert 'Ultra' not in screen_text(terminal)
+
+
+def test_agent_a_users_own_workflow_runs_with_always(home, history,
+                                                     agent_setup,
+                                                     monkeypatch):
+    monkeypatch.setattr(controller_module, 'Config', lambda: {
+        'promptline_agent_mode': 'ask',
+        'promptline_review_reasoning': 'low',
+        'promptline_subagents': 'always',
+        'promptline_subagent_flow': 'peek'})
+    (home / 'config' / 'promptline' / 'flows').mkdir()
+    (home / 'config' / 'promptline' / 'flows' / 'peek.md').write_text(
+        'look: explorer -> Have a look.\n')
+    team(agent_setup)
+    terminal, session, controller = start_shell(
+        shutil.which('bash'), str(home), {}, with_controller=True)
+    run_agent(terminal, session, controller, 'is the service up?')
+    assert agent_done(terminal, session), screen_text(terminal)
+    assert roles(agent_setup) == ['explorer', 'explorer', 'agent']
+    assert 'Stage 1 of 1: look' in screen_text(terminal)
+    assert 'Use subagents' not in screen_text(terminal)
+    system = agent_setup.requests[-1]['messages'][0]['content']
+    assert 'Work with subagents on every request' in system
+
+
+def test_agent_reports_a_workflow_that_cannot_run(home, history, agent_setup,
+                                                  monkeypatch):
+    monkeypatch.setattr(controller_module, 'Config', lambda: {
+        'promptline_agent_mode': 'ask',
+        'promptline_review_reasoning': 'low',
+        'promptline_subagents': 'always',
+        'promptline_subagent_flow': 'nope'})
+    team(agent_setup)
+    terminal, session, controller = start_shell(
+        shutil.which('bash'), str(home), {}, with_controller=True)
+    run_agent(terminal, session, controller, 'hello')
+    assert wait_for(lambda: 'no flow called' in screen_text(terminal) and
+                    session.state == session.PROMPT,
+                    timeout=30), screen_text(terminal)
+    assert agent_setup.requests == []       # nothing was asked of the model
+
+
+def test_agent_a_stop_skips_a_command_about_to_run_unseen(home, history,
+                                                          agent_setup,
+                                                          monkeypatch):
+    monkeypatch.setattr(controller_module, 'Config', lambda: {
+        'promptline_agent_mode': 'auto-review',
+        'promptline_review_reasoning': 'low'})
+    scripted(agent_setup, [
+        {'tool_calls': [tool_call('run_command', command='echo must-not-run',
+                                  reason='check')]},
+        {'content': 'All done.'},
+    ], review=lambda command: ('safe', 'only prints text'), delay=2)
+    terminal, session, controller = start_shell(
+        shutil.which('bash'), str(home), {}, with_controller=True)
+    run_agent(terminal, session, controller, 'do the thing')
+    assert wait_for(lambda: 'Type to steer' in screen_text(terminal),
+                    timeout=30), screen_text(terminal)
+    terminal.vte.feed_child(b'stop, leave it alone\r')
+    assert agent_done(terminal, session), screen_text(terminal)
+
+    screen = screen_text(terminal)
+    assert 'Not run, because you said stop: echo must-not-run' in screen
+    assert not (home / 'data' / 'promptline' / 'agent-audit.log').exists()
+    last = agent_setup.requests[1]['messages'][-1]['content']
+    assert last.startswith('The user sent this while you were working: stop, '
+                           'leave it alone') and 'told you to stop' in last
+
+
+def test_agent_ordinary_guidance_lets_an_unseen_command_run(home, history,
+                                                            agent_setup,
+                                                            monkeypatch):
+    monkeypatch.setattr(controller_module, 'Config', lambda: {
+        'promptline_agent_mode': 'auto-review',
+        'promptline_review_reasoning': 'low'})
+    scripted(agent_setup, [
+        {'tool_calls': [tool_call('run_command', command='echo did-run',
+                                  reason='check')]},
+        {'content': 'All done.'},
+    ], review=lambda command: ('safe', 'only prints text'), delay=2)
+    terminal, session, controller = start_shell(
+        shutil.which('bash'), str(home), {}, with_controller=True)
+    run_agent(terminal, session, controller, 'do the thing')
+    assert wait_for(lambda: 'Type to steer' in screen_text(terminal),
+                    timeout=30), screen_text(terminal)
+    terminal.vte.feed_child(b'by the way, the host is 10.0.0.5\r')
+    assert agent_done(terminal, session), screen_text(terminal)
+
+    assert 'Not run' not in screen_text(terminal)
+    assert [line[5] for line in audit_lines(home)] == ['echo did-run']
+    last = agent_setup.requests[1]['messages'][-1]['content']
+    assert last == ('The user sent this while you were working: by the way, '
+                    'the host is 10.0.0.5')

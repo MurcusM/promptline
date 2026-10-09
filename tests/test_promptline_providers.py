@@ -321,3 +321,58 @@ def test_key_problem_says_why(tmp_path):
     (tmp_path / 'empty').write_text('\n')
     empty = dict(base, promptline_api_key_file=str(tmp_path / 'empty'))
     assert 'is empty' in providers.key_problem(empty, {})
+
+
+def test_max_and_ultra_ask_claude_for_max_effort_and_room_to_think(server):
+    server.reply = lambda path, body: message_reply(
+        {'type': 'text', 'text': 'ls'})
+    for level in ('max', 'ultra'):
+        AnthropicProvider(server.url, 'k', 'claude-opus-5-5', level).chat(
+            [{'role': 'user', 'content': 'x'}], max_tokens=1000)
+        body = server.requests[-1][2]
+        assert body['output_config'] == {'effort': 'max'}
+        assert 'thinking' not in body        # always on for this model
+        assert body['max_tokens'] == 1000 + 32768
+    # A model that takes no effort setting is left alone
+    AnthropicProvider(server.url, 'k', 'claude-haiku-4-5', 'max').chat(
+        [{'role': 'user', 'content': 'x'}], max_tokens=1000)
+    body = server.requests[-1][2]
+    assert 'output_config' not in body and body['max_tokens'] == 1000
+    # ...and so is a request with no reasoning level
+    AnthropicProvider(server.url, 'k', 'claude-opus-5-5', '').chat(
+        [{'role': 'user', 'content': 'x'}])
+    assert 'output_config' not in server.requests[-1][2]
+
+
+def test_claude_thinking_goes_back_with_the_tool_results(server):
+    thought = {'type': 'thinking', 'thinking': '', 'signature': 'abc'}
+    server.reply = lambda path, body: message_reply(
+        thought,
+        {'type': 'tool_use', 'id': 'c1', 'name': 'run_command',
+         'input': {'command': 'ls'}})
+    provider = AnthropicProvider(server.url, 'k', 'claude-opus-5-5', 'high')
+    reply = provider.chat([{'role': 'user', 'content': 'x'}], TOOLS)
+    assert reply['_reasoning'] == [thought]
+    provider.chat([{'role': 'user', 'content': 'x'}, reply,
+                   {'role': 'tool', 'tool_call_id': 'c1', 'content': 'ok'}],
+                  TOOLS)
+    sent = server.requests[-1][2]['messages'][1]['content']
+    assert sent[0] == thought and sent[1]['type'] == 'tool_use'
+
+
+def test_max_is_xhigh_for_openai_style_servers(server):
+    server.reply = lambda path, body: {'choices': [
+        {'message': {'role': 'assistant', 'content': 'ls'}}]}
+    OpenAIProvider(server.url, 'k', 'kimi-x', 'ultra', api='chat').complete(
+        [{'role': 'user', 'content': 'x'}], max_tokens=100)
+    body = server.requests[-1][2]
+    assert body['reasoning_effort'] == 'xhigh'
+    assert body['max_completion_tokens'] == 100 + 32768
+
+
+def test_provider_errors_carry_the_http_status(server):
+    server.status = 413
+    with pytest.raises(ProviderError) as caught:
+        AnthropicProvider(server.url, 'k', 'claude-x').complete(
+            [{'role': 'user', 'content': 'x'}])
+    assert caught.value.status == 413

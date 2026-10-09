@@ -37,7 +37,7 @@ InputLine(text='', at_end=True)
 import collections
 import time
 
-OUTPUT_LIMIT = 8000
+OUTPUT_LIMIT = 100000
 LOG_LENGTH = 50
 
 InputLine = collections.namedtuple('InputLine', ['text', 'at_end'])

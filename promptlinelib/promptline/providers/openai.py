@@ -63,18 +63,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from . import USER_AGENT, ProviderError, needs_key
-
-# Reasoning tokens count against max_completion_tokens, so each effort level
-# needs room to think on top of the visible reply, and time to do it in
-REASONING_BUDGET = {
-    'minimal': (512, 30),
-    'low': (2048, 30),
-    'medium': (4096, 60),
-    'high': (8192, 90),
-    'xhigh': (16384, 120),
-}
-
+from . import REASONING_BUDGET, USER_AGENT, ProviderError, needs_key
 
 class OpenAIProvider(object):
     """Talks to {base_url}/chat/completions, or {base_url}/responses.
@@ -97,6 +86,12 @@ class OpenAIProvider(object):
             return self.api == 'responses'
         return bool(tools) and \
             urllib.parse.urlparse(self.base_url).hostname == 'api.openai.com'
+
+    def api_effort(self):
+        """The reasoning_effort to send: 'max' and 'ultra' are Promptline's,
+        and the most OpenAI-style APIs offer is 'xhigh'"""
+        return {'max': 'xhigh', 'ultra': 'xhigh'}.get(
+            self.reasoning_effort, self.reasoning_effort)
 
     def budget(self, max_tokens, timeout):
         """(token limit, timeout) allowing for the reasoning effort"""
@@ -128,7 +123,7 @@ class OpenAIProvider(object):
                              for m in messages],
                 'max_completion_tokens': max_tokens}
         if self.reasoning_effort:
-            body['reasoning_effort'] = self.reasoning_effort
+            body['reasoning_effort'] = self.api_effort()
         if tools:
             body['tools'] = tools
         if on_text:
@@ -155,7 +150,7 @@ class OpenAIProvider(object):
             body['tools'] = [dict(tool['function'], type='function')
                              for tool in tools]
         if self.reasoning_effort:
-            body['reasoning'] = {'effort': self.reasoning_effort}
+            body['reasoning'] = {'effort': self.api_effort()}
         if on_text:
             body['stream'] = True
         reply = self._post('/responses', body, timeout, on_text)
@@ -183,7 +178,8 @@ class OpenAIProvider(object):
                 return json.loads(response.read().decode('utf-8'))
         except urllib.error.HTTPError as ex:
             raise ProviderError('%s: %s' % (ex.code, error_message(ex)),
-                                auth=ex.code in (401, 403, 404))
+                                auth=ex.code in (401, 403, 404),
+                                status=ex.code)
         except (urllib.error.URLError, OSError, ValueError) as ex:
             raise ProviderError(str(getattr(ex, 'reason', ex)))
 

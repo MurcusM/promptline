@@ -76,10 +76,94 @@ you're away, use auto-review or full permission (below).
 
 **Steering.** While the agent is thinking, anything you type is sent to it
 when you press Enter ("Type to steer" shows on the spinner line). It reads
-your message before its next step and adjusts instead of starting over. If
-you steer while a command is waiting to run unseen (auto-review or full
-permission), that command is skipped so the agent can reconsider. While one
-of the agent's commands is running, your keys go to that command, as always.
+your message before its next step and takes it into account, **without
+dropping what it was doing**: a message is guidance, not an interruption, so
+commands still run, subagents keep working, and a workflow carries on (later
+stages are told what you added). To interrupt, start the message with `stop`
+(or `halt`, `abort`, `cancel`) or `!`: a command waiting to run unseen
+(auto-review or full permission) is skipped, subagents end at their next step,
+and the agent stops what it was doing and does what you say. While one of the
+agent's commands is running, your keys go to that command, as always.
+
+**Subagents.** A subagent is a helper the agent hands a task to. It works
+in a conversation of its own, so what it reads doesn't fill the agent's
+context, and only its report comes back; several can work at once. Built in:
+`explorer`, `planner` and `reviewer` only run read-only commands, and those
+run without asking, so they can work while you're away; `worker` and
+`verifier` can change things, and go through your permission mode, one prompt
+at a time, marked with who is asking. Turn them on in Preferences →
+Promptline → Subagents, or with `promptline_subagents`:
+
+| Setting | Meaning |
+| --- | --- |
+| `off` (default) | No subagents |
+| `auto` | The agent may hand tasks to them when it helps (a `delegate` tool) |
+| `always` | The agent is told to work with them on every request, at every reasoning level. If `promptline_subagent_flow` names a workflow, that runs first, every time |
+
+`promptline_subagent_parallel` (default 4) is how many work at once. Typing
+to steer doesn't interrupt them; saying `stop` does (see Steering). You can
+add your own, or replace a built-in one, with a file at
+`~/.config/promptline/agents/NAME.md`:
+
+```markdown
+---
+description: Looks for services listening on the network
+tools: read
+reasoning: high
+---
+You look at what is listening on this machine and report each service, its
+port, and which process owns it. Read-only commands only.
+```
+
+`tools: read` limits a subagent to read-only commands (an allowlist that
+also keeps it away from `~/.ssh`, `.env` files and the like); the default,
+`all`, uses your permission mode. `reasoning` is optional.
+
+**Workflows.** A workflow is a fixed series of stages, run by Promptline, not
+chosen by the model. Each stage hands a task to subagents, and what they
+report goes on to the next. Then the agent writes the answer from the whole
+record. Write one at `~/.config/promptline/flows/NAME.md`, one stage per
+line, and choose it with `promptline_subagent_flow`:
+
+```
+description: Look, then change, then check
+look: explorer -> Find out what is running on port 8080.
+change: worker -> Restart it with the new setting.
+check: reviewer, verifier -> Confirm it worked. [retry change x2]
+```
+
+- `name: agent, agent -> task` gives every agent listed the task at once;
+- `name: fanout agent -> task` runs one agent for each `- item` in the
+  previous stage's report;
+- `[retry stage xN]` makes a stage a gate: if any agent's report starts with
+  `FAIL`, the flow goes back to that stage, up to N times, with the failure
+  in the record. Checking agents (`reviewer`, `verifier`) answer `PASS:` or
+  `FAIL:` first.
+
+**Reasoning: `max` and `ultra`.** Two levels above `xhigh`
+(Preferences → Promptline, `promptline_agent_reasoning`, or per request with
+`@agent --max ...` and `@agent --ultra ...`):
+
+- `max` asks the model for the most thinking it gives: Claude's `max` effort,
+  OpenAI-style servers' `xhigh`. Models that take no such setting are left
+  alone.
+- `ultra` is `max` plus a team of subagents on a strict built-in workflow:
+  a planner lists the questions, one explorer per question investigates in
+  parallel (read-only), a worker does the work, then a reviewer and a verifier
+  check it and send it back to the worker, up to twice, if either says FAIL.
+  The agent then writes the answer from that record. It **overrides** your
+  subagent settings and workflow, whatever they are. Anything that changes
+  something still goes through your permission mode. Combine it with
+  `--goal`. It uses many more model calls than a normal request.
+
+**Context window.** The agent plans for a 1M-token window by default
+(`promptline_context_window`, Preferences → Promptline), for every model: it
+keeps up to 400 messages of a conversation, much more command output, and
+more of your terminal's history, and summarises the older part only once
+the conversation passes 70% of the window. Claude Haiku 4.5 is known to have
+200k, and is planned for as such. For any other model with less, the agent
+copes: when a provider says a request is too big, it summarises the older
+part, and tries again. Set the number lower to summarise sooner.
 
 **Personalisation.** Tell Promptline about your work once with `promptline -P`:
 your role, day-to-day tasks, the tools you use and avoid, your environments.
@@ -194,6 +278,10 @@ Open **Preferences → Promptline**, or edit `~/.config/promptline/config`:
 | `promptline_autocomplete_provider` / `promptline_agent_provider` | *(empty)* | A different provider for prediction or `@agent`; empty uses `promptline_provider` |
 | `promptline_agent_mode` | `ask` | `ask`, `auto-review` or `full` (full needs guardrails) |
 | `promptline_agent_max_steps` | `25` | Model replies one `@agent` request may take (not for `--goal`) |
+| `promptline_context_window` | `1000000` | Tokens of conversation the agent plans for before it summarises |
+| `promptline_subagents` | `off` | `off`, `auto` or `always` |
+| `promptline_subagent_flow` | *(empty)* | A workflow in `~/.config/promptline/flows/`, run first with `always` |
+| `promptline_subagent_parallel` | `4` | Subagents working at once |
 | `promptline_goal_approval_wait` | `15` | Minutes a goal run waits for an approval before skipping that command; `0` waits for ever |
 | `promptline_review_reasoning` | `medium` | Reasoning effort of the auto-review reviewer |
 
@@ -234,7 +322,11 @@ Ollama model to predict commands and a larger hosted model for `@agent`:
 ```
 
 Reasoning effort is sent to OpenAI-compatible servers, and some reject it,
-so leave `_reasoning` empty for those.
+so leave `_reasoning` empty for those. Levels: `none`, `minimal`, `low`,
+`medium`, `high`, `xhigh`, `max`, and (for `@agent`) `ultra`. Claude models
+that take an effort setting get it as `output_config.effort`, with their
+thinking carried between tool calls; `max` and `ultra` are Claude's `max`, and
+`xhigh` for the others.
 
 **OpenCode Zen.** Zen serves its models in different API formats, and
 Promptline picks one from the model name: `claude-*` use the Messages API,
