@@ -66,7 +66,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from . import ProviderError
+from . import USER_AGENT, ProviderError
 from .openai import error_message, iter_sse
 
 API_VERSION = '2023-06-01'
@@ -104,6 +104,7 @@ class AnthropicProvider(object):
 
     def headers(self):
         headers = {'Content-Type': 'application/json',
+                   'User-Agent': USER_AGENT,
                    'anthropic-version': API_VERSION}
         if self.api_key:
             headers['x-api-key'] = self.api_key

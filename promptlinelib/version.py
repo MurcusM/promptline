@@ -20,7 +20,7 @@ TerminatorVersion supplies our version number.
 """
 
 APP_NAME = 'promptline'
-APP_VERSION = '0.2.2'
+APP_VERSION = '0.2.3'
 # Reverse-DNS application ID: desktop file, AppStream metadata, D-Bus
 APP_ID = 'io.github.m_tek39.Promptline'
 # The Terminator release Promptline is currently based on

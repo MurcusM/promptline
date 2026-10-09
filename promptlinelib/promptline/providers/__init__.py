@@ -63,6 +63,12 @@ import urllib.parse
 from ...config import Config
 from ...translation import _
 from ...util import err
+from ...version import APP_VERSION
+
+# Sent with every request. Python's own default is blocked outright by the
+# Cloudflare firewall in front of some APIs (OpenCode Zen answers it with a
+# 403, error code 1010, before the request reaches the API)
+USER_AGENT = 'promptline/%s' % APP_VERSION
 
 
 class ProviderError(Exception):

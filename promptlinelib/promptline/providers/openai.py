@@ -63,7 +63,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from . import ProviderError, needs_key
+from . import USER_AGENT, ProviderError, needs_key
 
 # Reasoning tokens count against max_completion_tokens, so each effort level
 # needs room to think on top of the visible reply, and time to do it in
@@ -164,7 +164,8 @@ class OpenAIProvider(object):
         return from_responses_output(reply['output'])
 
     def _post(self, path, body, timeout, on_text=None):
-        headers = {'Content-Type': 'application/json'}
+        headers = {'Content-Type': 'application/json',
+                   'User-Agent': USER_AGENT}
         if self.api_key:
             headers['Authorization'] = 'Bearer ' + self.api_key
         request = urllib.request.Request(self.base_url + path,
