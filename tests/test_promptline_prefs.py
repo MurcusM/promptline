@@ -29,7 +29,8 @@ def config():
                   'promptline_goal_approval_wait',
                   'promptline_context_window', 'promptline_subagents',
                   'promptline_subagent_flow', 'promptline_subagent_parallel',
-                  'promptline_autocomplete_reasoning'))
+                  'promptline_autocomplete_reasoning',
+                  'promptline_review_model', 'promptline_review_reasoning'))
     yield config
     for key, value in saved.items():
         config[key] = value
@@ -221,3 +222,17 @@ def test_subagent_and_context_window_settings(config):
     assert config['promptline_subagent_parallel'] == 6
     page.widgets['context_window'].set_value(200000)
     assert config['promptline_context_window'] == 200000
+
+
+def test_the_reviewer_model_and_reasoning_are_settings(config):
+    page = prefs.PromptlinePage(config)
+    # Nothing is sent by default: every model takes that
+    assert config['promptline_review_model'] == ''
+    assert config['promptline_review_reasoning'] == ''
+    page.widgets['review_model'].set_text('deepseek-v4.1-flash')
+    assert config['promptline_review_model'] == 'deepseek-v4.1-flash'
+    page.widgets['review_reasoning'].set_text('low')
+    assert config['promptline_review_reasoning'] == 'low'
+    levels = [row[0] for row in
+              page.widgets['review_reasoning_combo'].get_model()]
+    assert 'ultra' not in levels and levels[0] == ''

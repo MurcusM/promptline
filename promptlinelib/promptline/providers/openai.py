@@ -63,7 +63,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from . import REASONING_BUDGET, USER_AGENT, ProviderError, needs_key
+from . import (REASONING_BUDGET, USER_AGENT, ProviderError, needs_key,
+               with_reasoning_fallback)
 
 class OpenAIProvider(object):
     """Talks to {base_url}/chat/completions, or {base_url}/responses.
@@ -112,7 +113,14 @@ class OpenAIProvider(object):
         'content' and, if the model called tools, 'tool_calls' (the
         OpenAI shape, which is also what the agent keeps its history in).
         With on_text, the reply is streamed and on_text(piece) is called as
-        text arrives (servers that don't stream simply reply at once)."""
+        text arrives (servers that don't stream simply reply at once).
+        A reasoning level the server won't take is dropped (see
+        with_reasoning_fallback)."""
+        return with_reasoning_fallback(
+            self, lambda: self._chat(messages, tools, max_tokens, timeout,
+                                     on_text))
+
+    def _chat(self, messages, tools, max_tokens, timeout, on_text):
         max_tokens, timeout = self.budget(max_tokens, timeout)
         if self.uses_responses_api(tools):
             return self._responses(messages, tools, max_tokens, timeout,

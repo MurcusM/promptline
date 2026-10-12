@@ -222,6 +222,11 @@ The controller types that at the next prompt. This needs no D-Bus, so it works w
   (70%), message and output limits in `cli.py`, and the terminal context in
   `prompts.context_text`. A provider's "too big" error (`loop.too_big`) summarises and
   retries, so a smaller model still works.
+- Reasoning levels are the user's to set and models change them (OpenCode answered 404
+  for a level a model had dropped). The reviewer has its own model and level
+  (`promptline_review_model`/`_reasoning`, empty = same model, no level), and providers
+  retry once without a level the server turns down (`with_reasoning_fallback`), keeping
+  the drop only if that works. Don't reintroduce a non-empty default level anywhere.
 - The reviewer's request used to be only the current line ("continue"); keep giving it
   `history` (set by `AutoReview.attach`).
 - OpenAI: tools combined with `reasoning_effort` are rejected on Chat Completions for

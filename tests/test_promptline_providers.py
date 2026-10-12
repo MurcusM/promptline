@@ -23,6 +23,7 @@ class FakeServer(object):
     def __init__(self):
         self.requests = []
         self.status = 200
+        self.status_for = None      # body -> status, if it depends on it
         self.stream = False
         self.reply = lambda path, body: {}
         server = self
@@ -37,7 +38,9 @@ class FakeServer(object):
                 server.requests.append((self.path, dict(
                     (k.lower(), v) for k, v in self.headers.items()), body))
                 reply = server.reply(self.path, body)
-                if server.status != 200:
+                status = server.status_for(body) if server.status_for \
+                    else server.status
+                if status != 200:
                     data = json.dumps({'error': {'message': 'nope'}}).encode()
                     kind = 'application/json'
                 elif server.stream:
@@ -47,7 +50,7 @@ class FakeServer(object):
                 else:
                     data = json.dumps(reply).encode()
                     kind = 'application/json'
-                self.send_response(server.status)
+                self.send_response(status)
                 self.send_header('Content-Type', kind)
                 self.send_header('Content-Length', str(len(data)))
                 self.end_headers()
@@ -376,3 +379,54 @@ def test_provider_errors_carry_the_http_status(server):
         AnthropicProvider(server.url, 'k', 'claude-x').complete(
             [{'role': 'user', 'content': 'x'}])
     assert caught.value.status == 413
+
+
+def test_a_reasoning_level_the_server_turns_down_is_dropped(server, capfd):
+    """OpenCode removed levels from a model and answered 404 for them"""
+    server.status_for = lambda body: 404 if 'reasoning_effort' in body else 200
+    server.reply = lambda path, body: {'choices': [
+        {'message': {'role': 'assistant', 'content': 'SAFE: fine'}}]}
+    provider = OpenAIProvider(server.url, 'k', 'deepseek-v4.1-flash',
+                              'medium', api='chat')
+    assert provider.complete([{'role': 'user', 'content': 'x'}]) == \
+        'SAFE: fine'
+    assert 'reasoning_effort' in server.requests[0][2]
+    assert 'reasoning_effort' not in server.requests[1][2]
+    assert provider.reasoning_effort == ''
+    assert "turned down the reasoning level 'medium'" in capfd.readouterr().err
+    # and it stays dropped: one request from now on
+    provider.complete([{'role': 'user', 'content': 'x'}])
+    assert len(server.requests) == 3
+
+
+def test_claude_effort_that_is_turned_down_is_dropped_too(server):
+    server.status_for = lambda body: 400 if 'output_config' in body else 200
+    server.reply = lambda path, body: message_reply(
+        {'type': 'text', 'text': 'ok'})
+    provider = AnthropicProvider(server.url, 'k', 'claude-opus-5-5', 'max')
+    assert provider.complete([{'role': 'user', 'content': 'x'}]) == 'ok'
+    assert 'output_config' in server.requests[0][2]
+    assert 'output_config' not in server.requests[1][2]
+
+
+def test_other_failures_are_not_blamed_on_the_reasoning_level(server):
+    # A bad key is not retried
+    server.status = 401
+    provider = OpenAIProvider(server.url, 'k', 'm', 'high', api='chat')
+    with pytest.raises(ProviderError):
+        provider.complete([{'role': 'user', 'content': 'x'}])
+    assert len(server.requests) == 1 and provider.reasoning_effort == 'high'
+    # A failure that is the same without it keeps the level and the
+    # original error
+    server.requests.clear()
+    server.status = 404
+    with pytest.raises(ProviderError) as caught:
+        provider.complete([{'role': 'user', 'content': 'x'}])
+    assert caught.value.status == 404 and provider.reasoning_effort == 'high'
+    assert len(server.requests) == 2
+    # No level set: nothing to drop, one request
+    server.requests.clear()
+    plain = OpenAIProvider(server.url, 'k', 'm', '', api='chat')
+    with pytest.raises(ProviderError):
+        plain.complete([{'role': 'user', 'content': 'x'}])
+    assert len(server.requests) == 1
