@@ -511,8 +511,10 @@ def choose_policy(ui, options, settings, query, cwd, guardrails):
     if mode == 'full':
         return FullPermission(), mode
     if mode == 'auto-review':
-        review = dict(settings or {}, reasoning=options.get(
-            'review_reasoning', 'medium'))
+        review = dict(settings or {},
+                      reasoning=options.get('review_reasoning') or '')
+        if options.get('review_model'):
+            review['model'] = options['review_model']
         reviewer = make_provider('agent', review)
         if reviewer is not None:
             return AutoReview(ModelReviewer(reviewer, query, cwd,

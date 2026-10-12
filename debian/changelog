@@ -1,3 +1,15 @@
+promptline (0.4.1) unstable; urgency=medium
+
+  * Fix: auto-review could fail every time on a model that no longer has the
+    reasoning level it was sent (OpenCode removed medium and xhigh from
+    DeepSeek V4.1 Flash, and every review got a 404). The reviewer now has
+    its own model and reasoning effort in Preferences > Promptline, and
+    sends no reasoning level unless you set one.
+  * A request that a server turns down because of the reasoning level is
+    tried again without it, for @agent, prediction and the reviewer.
+
+ -- Murcus Makhubele <murcus39@gmail.com>  Mon, 12 Oct 2026 18:29:07 +0200
+
 promptline (0.4.0) unstable; urgency=medium
 
   * Two more reasoning levels, max and ultra (Preferences > Promptline, or

@@ -316,6 +316,7 @@ class Controller(object):
             'agent': {
                 'mode': Config()['promptline_agent_mode'],
                 'review_reasoning': Config()['promptline_review_reasoning'],
+                'review_model': setting('promptline_review_model'),
                 'max_steps': setting('promptline_agent_max_steps'),
                 'context_window': setting('promptline_context_window'),
                 'subagents': setting('promptline_subagents'),

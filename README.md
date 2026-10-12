@@ -283,7 +283,8 @@ Open **Preferences → Promptline**, or edit `~/.config/promptline/config`:
 | `promptline_subagent_flow` | *(empty)* | A workflow in `~/.config/promptline/flows/`, run first with `always` |
 | `promptline_subagent_parallel` | `4` | Subagents working at once |
 | `promptline_goal_approval_wait` | `15` | Minutes a goal run waits for an approval before skipping that command; `0` waits for ever |
-| `promptline_review_reasoning` | `medium` | Reasoning effort of the auto-review reviewer |
+| `promptline_review_model` | *(empty)* | Model of the auto-review reviewer; empty uses the `@agent` model |
+| `promptline_review_reasoning` | *(empty)* | Reasoning effort of the reviewer; empty sends none, which every model takes |
 
 | Command | File |
 | --- | --- |

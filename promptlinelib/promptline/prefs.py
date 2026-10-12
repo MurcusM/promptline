@@ -100,6 +100,14 @@ class PromptlinePage(object):
                     'subagent settings below. Also: "@agent --max ..." and '
                     '"@agent --ultra ...".'))
         self.mode_chooser()
+        self.entry('review_model', _('Reviewer model'))
+        self.reasoning('review_reasoning', _('Reviewer reasoning effort'),
+                       REASONING)
+        self.note(_('The model that checks commands in auto-review mode. '
+                    'Empty: the @agent model. Leave the reasoning effort '
+                    'empty to send none, which every model takes; levels '
+                    'differ between models, and a model that does not '
+                    'have the one set refuses the request.'))
         self.spin('agent_max_steps', _('Step limit'), 1, 200)
         self.spin('context_window', _('Context window (tokens)'), 8000,
                   10000000, 1000)

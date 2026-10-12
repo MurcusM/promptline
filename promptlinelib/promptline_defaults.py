@@ -56,7 +56,11 @@ GLOBAL_DEFAULTS = {
     # Minutes a goal run waits for an approval before skipping that command
     # and carrying on with other work. 0 waits for ever
     'promptline_goal_approval_wait': 15,
-    'promptline_review_reasoning': 'medium',
+    # The auto-review reviewer: a model of its own (empty: the @agent
+    # model) and a reasoning level (empty: none is sent, which every model
+    # takes; levels differ between models and change)
+    'promptline_review_model': '',
+    'promptline_review_reasoning': '',
 }
 
 # Changes to Terminator's own profile defaults
