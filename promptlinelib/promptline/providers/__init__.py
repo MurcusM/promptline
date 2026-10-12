@@ -99,6 +99,35 @@ REASONING_BUDGET = {
     'ultra': (32768, 240),
 }
 
+# What a server answers when it won't take a request as sent: bad
+# parameter (400, 422), or, from OpenCode when a model no longer has the
+# reasoning level asked for, 404
+REJECTED = (400, 404, 422)
+
+
+def with_reasoning_fallback(provider, call):
+    """call() -> reply, for a provider with a reasoning_effort. If the
+    server turns the request down while a level is set, try once more
+    without it; if that works, go on without it, and say so. Models change
+    which levels they have, and a reply without extra thinking beats none.
+    The first error is raised if the second try fails too."""
+    try:
+        return call()
+    except ProviderError as ex:
+        if not provider.reasoning_effort or ex.status not in REJECTED:
+            raise
+        level, provider.reasoning_effort = provider.reasoning_effort, ''
+        try:
+            reply = call()
+        except ProviderError:
+            provider.reasoning_effort = level
+            raise ex
+        err('promptline: %s turned down the reasoning level %r (%s), so it '
+            'is going without. Set that level to empty in Preferences > '
+            'Promptline to stop this.' % (provider.model, level, ex))
+        return reply
+
+
 # Context windows (tokens) of models known to be smaller than the default
 SMALL_WINDOWS = (('claude-haiku-4-5', 200000),)
 

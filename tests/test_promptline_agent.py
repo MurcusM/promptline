@@ -341,6 +341,43 @@ def test_the_reviewer_sees_the_conversation_so_far():
     assert 'User: continue' in sent[0]
 
 
+def test_the_reviewer_has_its_own_model_and_reasoning(monkeypatch):
+    from promptlinelib.promptline.agent import cli
+    made = []
+    monkeypatch.setattr(cli, 'make_provider',
+                        lambda purpose, settings: made.append(settings) or
+                        object())
+    ui = UI()
+    settings = {'promptline_provider': 'opencode', 'model': 'agent-model',
+                'reasoning': 'ultra'}
+    policy, mode = cli.choose_policy(
+        ui, {'mode': 'auto-review'}, settings, 'x', '/', [])
+    # By default: the agent's model, and no reasoning level at all
+    assert mode == 'auto-review'
+    assert made[-1]['model'] == 'agent-model' and made[-1]['reasoning'] == ''
+    cli.choose_policy(ui, {'mode': 'auto-review',
+                           'review_model': 'deepseek-v4.1-flash',
+                           'review_reasoning': 'low'},
+                      settings, 'x', '/', [])
+    assert made[-1]['model'] == 'deepseek-v4.1-flash'
+    assert made[-1]['reasoning'] == 'low'
+    assert settings['model'] == 'agent-model'      # the agent is unaffected
+
+
+def test_a_review_that_fails_on_a_bad_request_points_at_the_settings():
+    def reviewer(command, reason):
+        error = ProviderError('404: upstream error', auth=True, status=404)
+        raise error
+    decision = AutoReview(reviewer).decide('ls')
+    assert decision.action == 'ask'
+    assert decision.note.startswith('Review failed (404: upstream error)')
+    assert 'reasoning level may be the problem' in decision.note
+    # Other failures don't send the user hunting for a setting
+    def offline(command, reason):
+        raise ProviderError('connection refused')
+    assert 'Preferences' not in AutoReview(offline).decide('ls').note
+
+
 def test_max_steps_setting_is_bounded():
     assert (max_steps(40), max_steps(0), max_steps(10 ** 6),
             max_steps('x')) == (40, 1, 500, 25)

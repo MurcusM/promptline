@@ -178,7 +178,12 @@ class AutoReview(AskEveryTime):
             else:
                 verdict, why = self.reviewer(command, reason, on_text=on_text)
         except Exception as ex:    # a failed review must never allow
-            return Decision(ASK, 'Review failed (%s)' % ex)
+            note = 'Review failed (%s)' % ex
+            if getattr(ex, 'status', None) in (400, 404, 422):
+                note += ('. The reviewer\'s model or reasoning level may be '
+                         'the problem: both can be set in Preferences > '
+                         'Promptline.')
+            return Decision(ASK, note)
         if verdict == 'safe':
             return Decision(ALLOW, 'reviewer: ' + why)
         return Decision(ASK, 'Reviewer: ' + why)

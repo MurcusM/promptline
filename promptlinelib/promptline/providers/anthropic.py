@@ -96,7 +96,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from . import USER_AGENT, ProviderError
+from . import USER_AGENT, ProviderError, with_reasoning_fallback
 from .openai import REASONING_BUDGET, error_message, iter_sse
 
 API_VERSION = '2023-06-01'
@@ -161,7 +161,14 @@ class AnthropicProvider(object):
              on_text=None):
         """Return the assistant message for messages, as a dict with
         'content' and, if the model called tools, 'tool_calls' (the
-        OpenAI shape, which is also what the agent keeps its history in)"""
+        OpenAI shape, which is also what the agent keeps its history in).
+        A reasoning level the server won't take is dropped (see
+        with_reasoning_fallback)."""
+        return with_reasoning_fallback(
+            self, lambda: self._chat(messages, tools, max_tokens, timeout,
+                                     on_text))
+
+    def _chat(self, messages, tools, max_tokens, timeout, on_text):
         system, turns = to_messages(messages)
         thinks = apply_reasoning({}, self.model, self.reasoning_effort)
         if thinks:
